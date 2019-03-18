@@ -7,9 +7,10 @@ import time
 
 class TokenAuthDatabase:
 
-    def __init__(self, download_url, query_url, api_token):
+    def __init__(self, download_url, query_url, auth_url, api_token):
         self.download_url = download_url
         self.query_url = query_url
+        self.auth_url = auth_url
         self.headers = {'X-API-Token': api_token}
         self.data = {}
         self.token_to_user = {}
@@ -39,13 +40,13 @@ class TokenAuthDatabase:
                 self.data = await response.json()
                 self._parse_data()
     
-    async def auth_token(self, uid, counter=None, groups=None, online=True):
+    async def auth_token(self, uid, counter=None, groups=None, online=True, location=None):
         if online:
-            return await self.auth_token_hex_online(uid, counter=counter, groups=groups)
+            return await self.auth_token_hex_online(uid, counter=counter, groups=groups, location=location)
         else:
-            return await self.auth_token_hex_offline(uid, counter=counter, groups=groups)
+            return await self.auth_token_hex_offline(uid, counter=counter, groups=groups, location=location)
 
-    async def auth_token_hex_offline(self, uid, counter=None, groups=None):
+    async def auth_token_hex_offline(self, uid, counter=None, groups=None, location=None):
         groups = groups or []
         if uid in self.token_to_user:
             username = self.token_to_user[uid]
@@ -56,21 +57,31 @@ class TokenAuthDatabase:
         logging.info('token {} -> user {} -> group not matched'.format(uid, username))
         return {'uid': uid, 'name': username, 'access': 0}
 
-    async def auth_token_hex_online(self, uid, counter=None, groups=None):
+    async def auth_token_hex_online(self, uid, counter=None, groups=None, location=None):
         groups = groups or []
         async with aiohttp.ClientSession() as session:
-            async with session.get(self.query_url.format(uid), headers=self.headers) as response:
+            async with session.post(self.auth_url, headers=self.headers, json={'uid': uid, 'counter': counter, 'groups': groups, 'location': location}) as response:
                 try:
                     response = await response.json()
                 except aiohttp.client_exceptions.ContentTypeError:
                     return None
-        username = response['username']
-        for group in groups:
-            if group in response['groups']:
-                logging.info('token {} -> user {} -> group {} ok (online auth)'.format(uid, username, group))
+        if response.get('found') is True:
+            if response.get('authorized') is True:
+                username = response['username']
+                logging.info('token {} -> user {} -> ok (online auth)'.format(uid, username))
                 return {'uid': uid, 'name': username, 'access': 1}
-        logging.info('token {} -> user {} -> group not matched'.format(uid, username))
-        return {'uid': uid, 'name': username, 'access': 0}
+            else:
+                logging.info('token {} -> not authorized -> {} (online auth)'.format(uid, response.get('reason')))
+                return {'uid': uid, 'name': '', 'access': 0}
+        else:
+            logging.info('token {} -> not found -> {} (online auth)'.format(uid, response.get('reason')))
+            return {'uid': uid, 'name': '', 'access': 0}
+        #for group in groups:
+        #    if group in response['groups']:
+        #        logging.info('token {} -> user {} -> group {} ok (online auth)'.format(uid, username, group))
+        #        return {'uid': uid, 'name': username, 'access': 1}
+        #logging.info('token {} -> user {} -> group not matched'.format(uid, username))
+        #return {'uid': uid, 'name': username, 'access': 0}
 
     def token_database_v1(self, groups=None):
         groups = groups or []

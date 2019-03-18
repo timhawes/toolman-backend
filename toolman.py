@@ -145,42 +145,10 @@ class SyncableDiskFile(BaseSyncableFile):
         return self.md5
 
 
-class Tool:
-
-    def __init__(self, clientid, factory, address):
-        self.clientid = clientid
-        self.factory = factory
-        self.tooldb = factory.tooldb
-        self.tokendb = factory.tokendb
-        self.address = address
-
-        # initial value for slug
-        self.slug = self.tooldb.get_value(self.clientid, 'slug', self.clientid)
-
-        # asyncio network streams, will be populated by the factory
-        self.reader = None
-        self.writer = None
-
-        # callback for sending an outbound message object
-        # will be populated by the asyncio protocol handler
-        self.write_callback = None
-
-        # remote state for syncing
-        self.remote_files = {}
-        self.remote_firmware_active = None
-        self.remote_firmware_pending = None
-
-        # local specification for syncing
-        self.files = {}
-        self.firmware = None
-
-        # current state of the sync
-        self.firmware_complete = asyncio.Event()
-        self.firmware_complete.clear()
-        self.firmware_pending_reboot = False
-
-        # mqtt cache
-        self.mqtt_cache = {}
+class Client:
+    
+    def __init__(self):
+        pass
 
     def __str__(self):
         if self.writer:
@@ -192,9 +160,9 @@ class Tool:
             cipher = self.writer.get_extra_info('cipher')
             if cipher:
                 tags.append('cipher={}:{}:{}'.format(*cipher))
-            return "<Tool {}>".format(' '.join(tags))
+            return "<{} {}>".format(self.__class__.__name__, ' '.join(tags))
         else:
-            return "<Tool clientid={}>".format(self.clientid)
+            return "<{} clientid={}>".format(self.__class__.__name__, self.clientid)
 
     def loggable_message(self, message):
         output = message.copy()
@@ -226,23 +194,6 @@ class Tool:
             logging.error("firmware {} not found".format(filename))
             return None
 
-    async def reload_settings(self, create=False):
-        self.slug = self.tooldb.get_value(self.clientid, 'slug', self.clientid)
-        self.token_groups = self.tooldb.get_value(self.clientid, 'groups')
-        config_json = json.dumps(self.tooldb.get_config(self.clientid)).encode()
-        token_data = self.tokendb.token_database_v2(
-            groups=self.token_groups,
-            salt=self.tooldb.get_value(self.clientid, 'token_salt').encode())
-        if create:
-            self.files['config.json'] = SyncableStringFile('config.json', config_json)
-            self.files['tokens.dat'] = SyncableStringFile('tokens.dat', token_data)
-        else:
-            self.files['config.json'].update(config_json)
-            self.files['tokens.dat'].update(token_data)
-        firmware_filename = self.tooldb.get_value(self.clientid, 'firmware')
-        if firmware_filename:
-            self.firmware = await self.get_firmware(firmware_filename)
-
     async def send_message(self, message):
         self.log('send {}'.format(self.loggable_message(message)))
         await self.write_callback(message)
@@ -251,26 +202,15 @@ class Tool:
         self.log('send {}'.format(self.loggable_message(message)))
         await self.send_message(message)
 
-    async def send_mqtt(self, topic, payload, retain=False):
+    async def send_mqtt(self, topic, payload, retain=False, dedup=False):
         logging.debug('mqtt {} {} {}'.format(topic, payload, retain))
         if self.factory.mqtt_queue:
             if retain:
-                if payload != self.mqtt_cache.get(topic):
+                if dedup is False or payload != self.mqtt_cache.get(topic):
                     self.factory.mqtt_queue.put((topic, payload, retain), block=False)
                     self.mqtt_cache[topic] = payload
             else:
                 self.factory.mqtt_queue.put((topic, payload, retain), block=False)
-
-    def get_motd(self):
-        last_user = self.factory.toolstatedb.get('{}:last_user'.format(self.clientid))
-        last_user_time = float(self.factory.toolstatedb.get('{}:last_user_time'.format(self.clientid), 0))
-        if last_user and last_user_time > 0:
-            return '{:.10}, {}'.format(last_user.decode(), friendly_age(time.time()-last_user_time))[0:20]
-        else:
-            return self.tooldb.get_value(self.clientid, 'motd', '')
-
-    async def send_motd(self):
-        await self.send_message({'cmd': 'motd', 'motd': self.get_motd()})
 
     async def sync_task(self):
         logging.debug('sync_task: starting')
@@ -324,40 +264,17 @@ class Tool:
             logging.debug('sync_task: loop ends')
             await asyncio.sleep(180)
 
-    async def main_task(self):
-        logging.debug("main_task() started")
-
-        last_keepalive = time.time()
-        last_file_check = 0
-        last_motd = 0
-
-        await self.send_message({'cmd': 'state_query'})
-        last_statistics = time.time() - random.randint(15, 60)
-
-        while True:
-            if time.time() - last_motd > 60:
-                await self.send_motd()
-                last_motd = time.time()
-            if time.time() - last_keepalive > 30:
-                logging.debug('sending keepalive ping')
-                await self.send_message({'cmd': 'ping'})
-                last_keepalive = time.time()
-            if time.time() - last_statistics > 60:
-                await self.send_message({'cmd': 'state_query'})
-                await self.send_message({'cmd': 'metrics_query'})
-                last_statistics = time.time()
-            await asyncio.sleep(5)
-
     async def handle_connect(self):
         self.log('connect {}'.format(self))
         await self.reload_settings(True)
         await self.send_mqtt('{}/id'.format(self.slug), self.clientid, True)
         await self.send_mqtt('{}/address'.format(self.slug), self.writer.get_extra_info('peername')[0], True)
+        await self.send_mqtt('{}/firmware_progress'.format(self.slug), '', True)
         await self.send_message({'cmd': 'ready'})
         await self.send_message({'cmd': 'system_query'})
 
     async def handle_disconnect(self):
-        if self.factory.tool_from_clientid(self.clientid) is self:
+        if self.factory.client_from_clientid(self.clientid) is self:
             self.log('disconnect (final)')
             await self.send_mqtt('{}/status'.format(self.slug), 'offline', True)
             await self.send_mqtt('{}/address'.format(self.slug), '', True)
@@ -435,6 +352,8 @@ class Tool:
         }
         if position + len(chunk) >= self.firmware['size']:
             reply['eof'] = True
+        progress = int(100 * (position + len(chunk)) / self.firmware['size'])
+        await self.send_mqtt('{}/firmware_progress'.format(self.slug), str(progress), True)
         await self.send_message(reply)
 
     async def handle_cmd_firmware_write_error(self, message):
@@ -448,7 +367,7 @@ class Tool:
         # all metadata will be sent to MQTT
         for k, v in message.items():
             if k not in ['cmd']:
-                await self.send_mqtt('{}/metrics/{}'.format(self.slug, k), v)
+                await self.send_mqtt('{}/metrics/{}'.format(self.slug, k), v, True)
 
     async def handle_cmd_ping(self, message):
         """Reply to ping requests from the client."""
@@ -462,31 +381,14 @@ class Tool:
             reply['millis'] = message['millis']
         await self.send_message(reply)
     
-    async def handle_cmd_state_info(self, message):
-        if 'state' in message:
-            await self.send_mqtt('{}/status'.format(self.slug), message['state'], True)
-        if 'milliamps' in message:
-            await self.send_mqtt('{}/current'.format(self.slug), message['milliamps'] / 1000.0, True)
-        if 'user' in message:
-            await self.send_mqtt('{}/user'.format(self.slug), message['user'], True)
-            last_user = self.factory.toolstatedb.get('{}:last_user'.format(self.clientid))
-            if message['user'] != '' and message['user'] != last_user:
-                self.factory.toolstatedb['{}:last_user'.format(self.clientid)] = message['user']
-                self.factory.toolstatedb['{}:last_user_time'.format(self.clientid)] = str(time.time())
-                await self.send_mqtt('{}/last_user'.format(self.slug), message['user'], True)
-        #if 'last_user' in message:
-        #    await self.send_mqtt('{}/last_user'.format(self.slug), message['last_user'], True)
-
     async def handle_cmd_system_info(self, message):
         """Receive system-level metadata from the client."""
 
-        # firmware versions will be saved for managing firmware sync later
-        if 'esp' in message:
-            if 'sketch_md5' in message['esp']:
-                self.remote_firmware_active = message['esp']['sketch_md5']
-                await self.send_mqtt('{}/sketch_md5'.format(self.slug), message['esp']['sketch_md5'], True)
         if 'esp_sketch_md5' in message:
+            # firmware versions will be saved for managing firmware sync later
             self.remote_firmware_active = message['esp_sketch_md5']
+
+            # send legacy MQTT topic
             await self.send_mqtt('{}/sketch_md5'.format(self.slug), message['esp_sketch_md5'], True)
 
         # all metadata will be sent to MQTT
@@ -500,7 +402,8 @@ class Tool:
         result = await self.tokendb.auth_token(
             message['uid'], 
             groups=self.token_groups, 
-            counter=message.get('counter', None)
+            counter=message.get('ntag_counter', None),
+            location='{}:{}'.format(self.__class__.__name__.lower(), self.slug),
         )
         if result:
             await self.send_message({
@@ -518,44 +421,174 @@ class Tool:
             })
 
 
-class ToolFactory:
+class Tool(Client):
 
-    def __init__(self, tooldb, tokendb, toolstatedb):
-        self.tooldb = tooldb
-        self.tokendb = tokendb
-        self.toolstatedb = toolstatedb
+    def __init__(self, clientid, factory, address):
+        self.clientid = clientid
+        self.factory = factory
+        self.tooldb = factory.tooldb
+        self.tokendb = factory.tokendb
+        self.address = address
 
-        self.tools_by_clientid = {}
-        self.mqtt_queue = None
+        # initial value for slug
+        self.slug = self.tooldb.get_value(self.clientid, 'slug', self.clientid)
 
-    def tool_from_auth(self, clientid, password, address=None):
-        if self.tooldb.authenticate(clientid, password):
-            tool = Tool(clientid, factory=self, address=address)
-            self.tools_by_clientid[clientid] = tool
-            return tool
-        return None
+        # asyncio network streams, will be populated by the factory
+        self.reader = None
+        self.writer = None
 
-    def tool_from_clientid(self, clientid):
+        # callback for sending an outbound message object
+        # will be populated by the asyncio protocol handler
+        self.write_callback = None
+
+        # remote state for syncing
+        self.remote_files = {}
+        self.remote_firmware_active = None
+        self.remote_firmware_pending = None
+
+        # local specification for syncing
+        self.files = {}
+        self.firmware = None
+
+        # current state of the sync
+        self.firmware_complete = asyncio.Event()
+        self.firmware_complete.clear()
+        self.firmware_pending_reboot = False
+
+        # mqtt cache
+        self.mqtt_cache = {}
+
+    async def reload_settings(self, create=False):
+        self.slug = self.tooldb.get_value(self.clientid, 'slug', self.clientid)
+        self.token_groups = self.tooldb.get_value(self.clientid, 'groups')
+        config_json = json.dumps(self.tooldb.get_config(self.clientid)).encode()
+        token_data = self.tokendb.token_database_v2(
+            groups=self.token_groups,
+            salt=self.tooldb.get_value(self.clientid, 'token_salt').encode())
+        if create:
+            self.files['config.json'] = SyncableStringFile('config.json', config_json)
+            self.files['tokens.dat'] = SyncableStringFile('tokens.dat', token_data)
+        else:
+            self.files['config.json'].update(config_json)
+            self.files['tokens.dat'].update(token_data)
+        firmware_filename = self.tooldb.get_value(self.clientid, 'firmware')
+        if firmware_filename:
+            self.firmware = await self.get_firmware(firmware_filename)
+
+    def get_motd(self):
+        last_user = self.factory.toolstatedb.get('{}:last_user'.format(self.clientid))
+        last_user_time = float(self.factory.toolstatedb.get('{}:last_user_time'.format(self.clientid), 0))
+        if last_user and last_user_time > 0:
+            return '{:.10}, {}'.format(last_user.decode(), friendly_age(time.time()-last_user_time))[0:20]
+        else:
+            return self.tooldb.get_value(self.clientid, 'motd', '')
+
+    async def send_motd(self):
+        await self.send_message({'cmd': 'motd', 'motd': self.get_motd()})
+
+    async def main_task(self):
+        logging.debug("main_task() started")
+
+        last_keepalive = time.time()
+        last_file_check = 0
+        last_motd = 0
+
+        await self.send_message({'cmd': 'state_query'})
+        last_statistics = time.time() - random.randint(15, 60)
+
+        while True:
+            if time.time() - last_motd > 60:
+                await self.send_motd()
+                last_motd = time.time()
+            if time.time() - last_keepalive > 30:
+                logging.debug('sending keepalive ping')
+                await self.send_message({'cmd': 'ping'})
+                last_keepalive = time.time()
+            if time.time() - last_statistics > 60:
+                await self.send_message({'cmd': 'state_query'})
+                await self.send_message({'cmd': 'metrics_query'})
+                last_statistics = time.time()
+            await asyncio.sleep(5)
+
+    async def handle_cmd_state_info(self, message):
+        if 'state' in message:
+            await self.send_mqtt('{}/status'.format(self.slug), message['state'], True, dedup=True)
+        if 'milliamps' in message:
+            await self.send_mqtt('{}/current'.format(self.slug), message['milliamps'] / 1000.0, True)
+        if 'user' in message:
+            await self.send_mqtt('{}/user'.format(self.slug), message['user'], True, dedup=True)
+            last_user = self.factory.toolstatedb.get('{}:last_user'.format(self.clientid))
+            if message['user'] != '' and message['user'] != last_user:
+                self.factory.toolstatedb['{}:last_user'.format(self.clientid)] = message['user']
+                self.factory.toolstatedb['{}:last_user_time'.format(self.clientid)] = str(time.time())
+                await self.send_mqtt('{}/last_user'.format(self.slug), message['user'], True, dedup=True)
+        #if 'last_user' in message:
+        #    await self.send_mqtt('{}/last_user'.format(self.slug), message['last_user'], True, dedup=True)
+
+
+class ClientFactory:
+    
+    def __init__(self):
+        self.clients_by_id = {}
+        self.clients_by_slug = {}
+        self.mqtt_queue = None        
+
+    def client_from_id(self, clientid):
         try:
-            return self.tools_by_clientid[clientid]
+            return self.clients_by_id[clientid]
         except KeyError:
             return None    
 
-    async def tool_from_hello(self, msg, reader, writer, address):
+    def client_from_clientid(self, clientid):
+        try:
+            return self.clients_by_id[clientid]
+        except KeyError:
+            return None    
+
+    def client_from_slug(self, slug):
+        try:
+            return self.clients_by_slug[slug]
+        except KeyError:
+            return None
+
+    async def client_from_hello(self, msg, reader, writer, address):
         if msg['cmd'] == 'hello':
-            tool = self.tool_from_auth(msg['clientid'], msg['password'], address=address)
-            if tool:
-                tool.reader = reader
-                tool.writer = writer
-                logging.debug("tool_from_hello -> {}".format(tool))
-                return tool
+            client = self.client_from_auth(msg['clientid'], msg['password'], address=address)
+            if client:
+                client.reader = reader
+                client.writer = writer
+                logging.debug("client_from_hello -> {}".format(client))
+                return client
             else:
-                logging.debug("tool_from_hello -> auth failed")
+                logging.debug("client_from_hello -> auth failed")
 
     async def command(self, message):
         logging.info('command received: {}'.format(message))
         if message.get('cmd') == 'send' and 'clientid' in message and 'message' in message:
-            tool = self.tool_from_clientid(message['clientid'])
-            if tool:
-                await tool.send_message(message['message'])
-                return "OK"
+            client = self.client_from_id(message['clientid'])
+            if client:
+                await client.send_message(message['message'])
+                return 'OK'
+        if message.get('cmd') == 'send' and 'slug' in message and 'message' in message:
+            client = self.client_from_slug(message['slug'])
+            if client:
+                await client.send_message(message['message'])
+                return 'OK'
+        return 'Client not found'
+
+
+class ToolFactory(ClientFactory):
+    
+    def __init__(self, tooldb, tokendb, toolstatedb):
+        self.tooldb = tooldb
+        self.tokendb = tokendb
+        self.toolstatedb = toolstatedb
+        super(ToolFactory, self).__init__()
+
+    def client_from_auth(self, clientid, password, address=None):
+        if self.tooldb.authenticate(clientid, password):
+            client = Tool(clientid, factory=self, address=address)
+            self.clients_by_id[clientid] = client
+            self.clients_by_slug[client.slug] = client
+            return client
+        return None

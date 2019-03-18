@@ -16,7 +16,7 @@ import paho.mqtt.client as mqtt
 sys.path.insert(0, 'lib')
 
 import toolman
-from tooldb import ToolDB
+from clientdb import ClientDB
 from ehl_tokendb_crm_async import TokenAuthDatabase
 
 
@@ -30,9 +30,9 @@ class settings:
     listen_port = int(os.environ.get('LISTEN_PORT', 13260))
     listen_ssl_port = int(os.environ.get('LISTEN_SSL_PORT', 13261))
     firmware_path = os.environ.get('FIRMWARE_PATH', 'firmware')
-    tools_yaml = os.environ.get('TOOLS_YAML', 'config/tools.yaml')
+    config_yaml = os.environ.get('CONFIG_YAML', 'config/configs.yaml')
     api_download_url = os.environ.get('API_DOWNLOAD_URL')
-    #api_auth_url = os.environ.get('API_AUTH_URL')
+    api_auth_url = os.environ.get('API_AUTH_URL')
     api_query_url = os.environ.get('API_QUERY_URL')
     api_token = os.environ.get('API_TOKEN')
     toolstate_db = os.environ.get('TOOLSTATE_DB', 'toolstate-db')
@@ -75,13 +75,13 @@ async def write_packet(stream, data, len_bytes=1):
     await stream.drain()
 
 
-async def create_tool(reader, writer):
+async def create_client(reader, writer):
     data = await read_packet(reader, len_bytes=2)
     msg = json.loads(data)
-    #logging.debug("create_tool < {}".format(msg))
-    tool = await toolfactory.tool_from_hello(msg, reader, writer, writer.get_extra_info('peername'))
-    if tool:
-        return tool
+    #logging.debug("create_client < {}".format(msg))
+    client = await clientfactory.client_from_hello(msg, reader, writer, writer.get_extra_info('peername'))
+    if client:
+        return client
 
 async def ss_reader(reader, callback):
     while True:
@@ -121,27 +121,27 @@ async def ss_handler(reader, writer):
                 logging.debug('version {}'.format(data.version()))
 
     write_lock = asyncio.Lock()
-    async def tool_write_callback(msg):
+    async def client_write_callback(msg):
         await ss_write_callback(writer, write_lock, msg)
 
-    tool = await create_tool(reader, writer)
-    if tool:
-        tool.write_callback = tool_write_callback
+    client = await create_client(reader, writer)
+    if client:
+        client.write_callback = client_write_callback
     else:
         writer.close()
         return
 
     try:
-        await tool.handle_connect()
+        await client.handle_connect()
         await gather_group(
-            ss_reader(reader, tool.handle_message),
-            tool.main_task(),
-            tool.sync_task(),
+            ss_reader(reader, client.handle_message),
+            client.main_task(),
+            client.sync_task(),
         )
     except ConnectionResetError as e:
-        await tool.handle_disconnect()
+        await client.handle_disconnect()
     except asyncio.streams.IncompleteReadError as e:
-        await tool.handle_disconnect()
+        await client.handle_disconnect()
     except Exception as e:
         logging.exception("gather exception")
     finally:
@@ -155,7 +155,7 @@ async def command_handler(reader, writer):
         data = await reader.read()
         if len(data) > 0:
             message = json.loads(data)
-            response = await toolfactory.command(message)
+            response = await clientfactory.command(message)
             if isinstance(response, dict):
                 writer.write(json.dumps(response).encode())
                 await writer.drain()
@@ -261,12 +261,13 @@ if settings.mqtt_host:
 else:
     mqtt_queue = None
 
-tooldb = ToolDB(settings.tools_yaml)
+clientdb = ClientDB(settings.config_yaml)
 tokendb = TokenAuthDatabase(settings.api_download_url,
                             settings.api_query_url,
+                            settings.api_auth_url,
                             settings.api_token)
-toolfactory = toolman.ToolFactory(tooldb, tokendb, dbm.open(settings.toolstate_db, flag='c'))
-toolfactory.mqtt_queue = mqtt_queue
+clientfactory = toolman.ToolFactory(clientdb, tokendb, dbm.open(settings.toolstate_db, flag='c'))
+clientfactory.mqtt_queue = mqtt_queue
 
 if settings.debug:
     logging.basicConfig(level=logging.DEBUG)
