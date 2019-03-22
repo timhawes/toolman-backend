@@ -564,18 +564,26 @@ class ClientFactory:
 
     async def command(self, message):
         logging.info('command received: {}'.format(message))
-        if message.get('cmd') == 'send' and 'clientid' in message and 'message' in message:
-            client = self.client_from_id(message['clientid'])
-            if client:
-                await client.send_message(message['message'])
-                return 'OK'
-        if message.get('cmd') == 'send' and 'slug' in message and 'message' in message:
-            client = self.client_from_slug(message['slug'])
-            if client:
-                await client.send_message(message['message'])
-                return 'OK'
-        return 'Client not found'
 
+        client = None
+        if 'id' in message:
+            client = self.client_from_id(message['id']) or self.client_from_slug(message['id'])
+        if 'slug' in message:
+            client = self.client_from_slug(message['slug'])
+        if 'clientid' in message:
+            client = self.client_from_id(message['clientid'])
+        if not client:
+            return 'Client not found'
+
+        if message.get('cmd') == 'send' and 'message' in message:
+            await client.send_message(message['message'])
+            return 'OK'
+
+        if message.get('cmd') == 'disconnect':
+            client.writer.close()
+            return 'OK'
+
+        return 'Bad command'
 
 class ToolFactory(ClientFactory):
     
