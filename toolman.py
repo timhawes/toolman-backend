@@ -274,7 +274,7 @@ class Client:
         await self.send_message({'cmd': 'system_query'})
 
     async def handle_disconnect(self):
-        if self.factory.client_from_clientid(self.clientid) is self:
+        if self.factory.client_from_id(self.clientid) is self:
             self.log('disconnect (final)')
             await self.send_mqtt('{}/status'.format(self.slug), 'offline', True)
             await self.send_mqtt('{}/address'.format(self.slug), '', True)
@@ -534,12 +534,6 @@ class ClientFactory:
         self.mqtt_queue = None        
 
     def client_from_id(self, clientid):
-        try:
-            return self.clients_by_id[clientid]
-        except KeyError:
-            return None    
-
-    def client_from_clientid(self, clientid):
         try:
             return self.clients_by_id[clientid]
         except KeyError:
