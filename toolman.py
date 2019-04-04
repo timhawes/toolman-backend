@@ -296,6 +296,7 @@ class Client:
             'firmware_write_ok': self.handle_cmd_firmware_write_ok,
             'metrics_info': self.handle_cmd_metrics_info,
             'ping': self.handle_cmd_ping,
+            'pong': self.handle_cmd_pong,
             'state_info': self.handle_cmd_state_info,
             'system_info': self.handle_cmd_system_info,
             'token_auth': self.handle_cmd_token_auth,
@@ -380,6 +381,13 @@ class Client:
         if 'millis' in message:
             reply['millis'] = message['millis']
         await self.send_message(reply)
+
+    async def handle_cmd_pong(self, message):
+        """Receive response to ping."""
+
+        if 'timestamp' in message:
+            rtt = time.time() - float(message['timestamp'])
+            await self.send_mqtt('{}/rtt'.format(self.slug), str(int(rtt*1000)), True)
     
     async def handle_cmd_system_info(self, message):
         """Receive system-level metadata from the client."""
@@ -502,7 +510,7 @@ class Tool(Client):
                 last_motd = time.time()
             if time.time() - last_keepalive > 30:
                 logging.debug('sending keepalive ping')
-                await self.send_message({'cmd': 'ping'})
+                await self.send_message({'cmd': 'ping', 'timestamp': time.time()})
                 last_keepalive = time.time()
             if time.time() - last_statistics > 60:
                 await self.send_message({'cmd': 'state_query'})
