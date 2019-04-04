@@ -593,4 +593,6 @@ class ToolFactory(ClientFactory):
             self.clients_by_id[clientid] = client
             self.clients_by_slug[client.slug] = client
             return client
+        else:
+            logging.info('client {} auth failed (address={})'.format(clientid, address))
         return None
