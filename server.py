@@ -138,11 +138,11 @@ async def ss_handler(reader, writer):
             client.sync_task(),
         )
     except ConnectionResetError as e:
-        await client.handle_disconnect()
+        await client.handle_disconnect(reason='connection reset')
     except asyncio.streams.IncompleteReadError as e:
-        await client.handle_disconnect()
+        await client.handle_disconnect(reason='incomplete read')
     except asyncio.TimeoutError as e:
-        await client.handle_disconnect()
+        await client.handle_disconnect(reason='receive timeout')
     except Exception as e:
         logging.exception("gather exception")
     finally:
