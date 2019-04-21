@@ -129,18 +129,18 @@ class Tool(Client):
 
     async def handle_cmd_state_info(self, message):
         if 'state' in message:
-            await self.send_mqtt('{}/status'.format(self.slug), message['state'], True, dedup=True)
+            await self.send_mqtt('status', message['state'], True, dedup=True)
         if 'milliamps' in message:
-            await self.send_mqtt('{}/current'.format(self.slug), message['milliamps'] / 1000.0, True)
+            await self.send_mqtt('current', message['milliamps'] / 1000.0, True)
         if 'user' in message:
-            await self.send_mqtt('{}/user'.format(self.slug), message['user'], True, dedup=True)
+            await self.send_mqtt('user', message['user'], True, dedup=True)
             last_user = self.factory.toolstatedb.get('{}:last_user'.format(self.clientid))
             if message['user'] != '' and message['user'] != last_user:
                 self.factory.toolstatedb['{}:last_user'.format(self.clientid)] = message['user']
                 self.factory.toolstatedb['{}:last_user_time'.format(self.clientid)] = str(time.time())
-                await self.send_mqtt('{}/last_user'.format(self.slug), message['user'], True, dedup=True)
+                await self.send_mqtt('last_user', message['user'], True, dedup=True)
         #if 'last_user' in message:
-        #    await self.send_mqtt('{}/last_user'.format(self.slug), message['last_user'], True, dedup=True)
+        #    await self.send_mqtt('last_user', message['last_user'], True, dedup=True)
 
 
 class ToolFactory(ClientFactory):
