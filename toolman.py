@@ -40,7 +40,7 @@ def friendly_age(t):
 
 class Tool(Client):
 
-    def __init__(self, clientid, factory, address):
+    def __init__(self, clientid, factory, address, mqtt_prefix='undefined/'):
         self.clientid = clientid
         self.factory = factory
         self.tooldb = factory.tooldb
@@ -73,7 +73,7 @@ class Tool(Client):
         self.firmware_pending_reboot = False
 
         # mqtt
-        self.mqtt_prefix = 'undefined/'
+        self.mqtt_prefix = mqtt_prefix
         self.mqtt_cache = {}
 
     async def reload_settings(self, create=False):
@@ -153,7 +153,7 @@ class ToolFactory(ClientFactory):
 
     def client_from_auth(self, clientid, password, address=None):
         if self.tooldb.authenticate(clientid, password):
-            client = Tool(clientid, factory=self, address=address)
+            client = Tool(clientid, factory=self, address=address, mqtt_prefix=self.mqtt_prefix)
             self.clients_by_id[clientid] = client
             self.clients_by_slug[client.slug] = client
             return client
