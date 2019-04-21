@@ -72,7 +72,8 @@ class Tool(Client):
         self.firmware_complete.clear()
         self.firmware_pending_reboot = False
 
-        # mqtt cache
+        # mqtt
+        self.mqtt_prefix = 'test/tool/'
         self.mqtt_cache = {}
 
     async def reload_settings(self, create=False):

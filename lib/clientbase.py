@@ -172,15 +172,19 @@ class Client:
         self.log('send {}'.format(self.loggable_message(message)))
         await self.send_message(message)
 
-    async def send_mqtt(self, topic, payload, retain=False, dedup=False):
+    async def send_mqtt(self, topic, payload, retain=False, dedup=False, ignore_prefix=False):
+        if ignore_prefix:
+            t = topic
+        else:
+            t = self.mqtt_prefix + self.slug + '/' + topic
         logging.debug('mqtt {} {} {}'.format(topic, payload, retain))
         if self.factory.mqtt_queue:
             if retain:
-                if dedup is False or payload != self.mqtt_cache.get(topic):
-                    self.factory.mqtt_queue.put((topic, payload, retain), block=False)
-                    self.mqtt_cache[topic] = payload
+                if dedup is False or payload != self.mqtt_cache.get(t):
+                    self.factory.mqtt_queue.put((t, payload, retain), block=False)
+                    self.mqtt_cache[t] = payload
             else:
-                self.factory.mqtt_queue.put((topic, payload, retain), block=False)
+                self.factory.mqtt_queue.put((t, payload, retain), block=False)
 
     async def sync_task(self):
         logging.debug('sync_task: starting')
