@@ -23,7 +23,8 @@ from ehl_tokendb_crm_async import TokenAuthDatabase
 class settings:
     mqtt_host = os.environ.get('MQTT_HOST')
     mqtt_port = int(os.environ.get('MQTT_PORT', '1883'))
-    mqtt_prefix = os.environ.get('MQTT_PREFIX', 'test/tool/')
+    mqtt_global_prefix = os.environ.get('MQTT_GLOBAL_PREFIX', 'test/')
+    mqtt_prefix = os.environ.get('MQTT_PREFIX', 'tool/')
     server_cert_file = os.environ.get('SERVER_CERT_FILE')
     server_key_file = os.environ.get('SERVER_KEY_FILE')
     listen_host = os.environ.get('LISTEN_HOST', '0.0.0.0')
@@ -256,7 +257,7 @@ class MqttThread(threading.Thread):
                 m.loop_start()
                 while True:
                     topic, payload, retain = mqtt_queue.get()
-                    m.publish('{}{}'.format(settings.mqtt_prefix, topic), payload, retain=retain)
+                    m.publish('{}{}'.format(settings.mqtt_global_prefix, topic), payload, retain=retain)
             except Exception as e:
                 logging.exception('Exception in MqttThread')
                 time.sleep(1)
