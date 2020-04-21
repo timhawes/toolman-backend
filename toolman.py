@@ -132,6 +132,8 @@ class Tool(Client):
             await self.send_mqtt('status', message['state'], True, dedup=True)
         if 'milliamps' in message:
             await self.send_mqtt('current', message['milliamps'] / 1000.0, True)
+        if 'milliamps_simple' in message:
+            await self.send_mqtt('current_simple', message['milliamps_simple'] / 1000.0, True)
         if 'user' in message:
             await self.send_mqtt('user', message['user'], True, dedup=True)
             last_user = self.factory.toolstatedb.get('{}:last_user'.format(self.clientid))
