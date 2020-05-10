@@ -119,7 +119,7 @@ class Tool(Client):
                 last_motd = time.time()
             if time.time() - last_keepalive > 30:
                 logging.debug('sending keepalive ping')
-                await self.send_message({'cmd': 'ping', 'timestamp': time.time()})
+                await self.send_message({'cmd': 'ping', 'timestamp': str(time.time())})
                 last_keepalive = time.time()
             if time.time() - last_statistics > 60:
                 await self.send_message({'cmd': 'state_query'})
