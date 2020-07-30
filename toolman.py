@@ -149,6 +149,13 @@ class Tool(Client):
         #if 'last_user' in message:
         #    await self.send_mqtt('last_user', message['last_user'], True, dedup=True)
 
+    def status_json(self):
+        return {
+            'clientid': self.clientid,
+            'address': self.address,
+            'slug': self.slug,
+        }
+
 
 class ToolFactory(ClientFactory):
     
