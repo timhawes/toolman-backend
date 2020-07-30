@@ -31,7 +31,7 @@ class settings:
     listen_port = int(os.environ.get('LISTEN_PORT', 13260))
     listen_ssl_port = int(os.environ.get('LISTEN_SSL_PORT', 13261))
     firmware_path = os.environ.get('FIRMWARE_PATH', 'firmware')
-    config_yaml = os.environ.get('CONFIG_YAML', 'config/configs.yaml')
+    config_yaml = os.environ.get('CONFIG_YAML', 'config/config.yaml')
     api_download_url = os.environ.get('API_DOWNLOAD_URL')
     api_auth_url = os.environ.get('API_AUTH_URL')
     api_query_url = os.environ.get('API_QUERY_URL')
