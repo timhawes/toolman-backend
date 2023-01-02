@@ -79,9 +79,11 @@ class Tool(Client):
     async def reload_settings(self, create=False):
         self.slug = self.tooldb.get_value(self.clientid, 'slug', self.clientid)
         self.token_groups = self.tooldb.get_value(self.clientid, 'groups')
+        self.token_exclude_groups = self.tooldb.get_value(self.clientid, 'exclude_groups')
         config_json = json.dumps(self.tooldb.get_config(self.clientid)).encode()
         token_data = self.tokendb.token_database_v2(
             groups=self.token_groups,
+            exclude_groups=self.token_exclude_groups,
             salt=self.tooldb.get_value(self.clientid, 'token_salt').encode())
         if create:
             self.files['config.json'] = SyncableStringFile('config.json', config_json)
