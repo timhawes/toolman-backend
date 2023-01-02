@@ -76,6 +76,9 @@ class Tool(Client):
         self.mqtt_prefix = mqtt_prefix
         self.mqtt_cache = {}
 
+        # metrics
+        self.metrics = {}
+
     async def reload_settings(self, create=False):
         self.slug = self.tooldb.get_value(self.clientid, 'slug', self.clientid)
         self.token_groups = self.tooldb.get_value(self.clientid, 'groups')
