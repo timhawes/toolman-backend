@@ -5,40 +5,45 @@ import dbm
 import json
 import logging
 import os
+import queue
 import ssl
 import sys
-import time
-import queue
 import threading
+import time
 
+import apprise
 import paho.mqtt.client as mqtt
+import requests
 
-sys.path.insert(0, 'lib')
+sys.path.insert(0, "lib")
 
-import toolman
 from clientdb import ClientDB
 from ehl_tokendb_crm_async import TokenAuthDatabase
 
+import toolman
+
 
 class settings:
-    mqtt_host = os.environ.get('MQTT_HOST')
-    mqtt_port = int(os.environ.get('MQTT_PORT', '1883'))
-    mqtt_global_prefix = os.environ.get('MQTT_GLOBAL_PREFIX', 'test/')
-    mqtt_prefix = os.environ.get('MQTT_PREFIX', 'tool/')
-    server_cert_file = os.environ.get('SERVER_CERT_FILE')
-    server_key_file = os.environ.get('SERVER_KEY_FILE')
-    listen_host = os.environ.get('LISTEN_HOST', '0.0.0.0')
-    listen_port = int(os.environ.get('LISTEN_PORT', 13260))
-    listen_ssl_port = int(os.environ.get('LISTEN_SSL_PORT', 13261))
-    firmware_path = os.environ.get('FIRMWARE_PATH', 'firmware')
-    config_yaml = os.environ.get('CONFIG_YAML', 'config/config.yaml')
-    api_download_url = os.environ.get('API_DOWNLOAD_URL')
-    api_auth_url = os.environ.get('API_AUTH_URL')
-    api_query_url = os.environ.get('API_QUERY_URL')
-    api_token = os.environ.get('API_TOKEN')
-    toolstate_db = os.environ.get('TOOLSTATE_DB', 'toolstate-db')
-    command_socket = os.environ.get('COMMAND_SOCKET')
-    if os.environ.get('DEBUG_MODE'):
+    mqtt_host = os.environ.get("MQTT_HOST")
+    mqtt_port = int(os.environ.get("MQTT_PORT", "1883"))
+    mqtt_global_prefix = os.environ.get("MQTT_GLOBAL_PREFIX", "test/")
+    mqtt_prefix = os.environ.get("MQTT_PREFIX", "tool/")
+    server_cert_file = os.environ.get("SERVER_CERT_FILE")
+    server_key_file = os.environ.get("SERVER_KEY_FILE")
+    listen_host = os.environ.get("LISTEN_HOST", "0.0.0.0")
+    listen_port = int(os.environ.get("LISTEN_PORT", 13260))
+    listen_ssl_port = int(os.environ.get("LISTEN_SSL_PORT", 13261))
+    firmware_path = os.environ.get("FIRMWARE_PATH", "firmware")
+    config_yaml = os.environ.get("CONFIG_YAML", "config/config.yaml")
+    api_download_url = os.environ.get("API_DOWNLOAD_URL")
+    api_auth_url = os.environ.get("API_AUTH_URL")
+    api_query_url = os.environ.get("API_QUERY_URL")
+    api_token = os.environ.get("API_TOKEN")
+    toolstate_db = os.environ.get("TOOLSTATE_DB", "toolstate-db")
+    command_socket = os.environ.get("COMMAND_SOCKET")
+    apprise_events = os.environ.get("APPRISE_EVENTS")
+    discord_events = os.environ.get("DISCORD_EVENTS")
+    if os.environ.get("DEBUG_MODE"):
         debug = True
     else:
         debug = False
@@ -77,31 +82,35 @@ async def write_packet(stream, data, len_bytes=1):
 async def create_client(reader, writer):
     data = await read_packet(reader, len_bytes=2)
     msg = json.loads(data)
-    #logging.debug("create_client < {}".format(msg))
-    client = await clientfactory.client_from_hello(msg, reader, writer, writer.get_extra_info('peername'))
+    # logging.debug("create_client < {}".format(msg))
+    client = await clientfactory.client_from_hello(
+        msg, reader, writer, writer.get_extra_info("peername")
+    )
     if client:
         return client
+
 
 async def ss_reader(reader, callback, timeout=180):
     while True:
         data = await asyncio.wait_for(read_packet(reader, len_bytes=2), timeout=timeout)
         if data:
-            #logging.debug("ss_reader < {}".format(data))
+            # logging.debug("ss_reader < {}".format(data))
             try:
                 msg = json.loads(data)
             except UnicodeDecodeError:
-                logging.exception('Error processing received packet {}'.format(data))
+                logging.exception("Error processing received packet {}".format(data))
                 return
             except json.JSONDecodeError:
-                logging.exception('Error processing received packet {}'.format(data))
+                logging.exception("Error processing received packet {}".format(data))
                 return
             await callback(msg)
         else:
             return
 
+
 async def ss_write_callback(writer, lock, msg):
-    #logging.debug("ss_writer > {}".format(msg))
-    data = json.dumps(msg, separators=(',', ':')).encode()
+    # logging.debug("ss_writer > {}".format(msg))
+    data = json.dumps(msg, separators=(",", ":")).encode()
     async with lock:
         await write_packet(writer, data, len_bytes=2)
 
@@ -116,16 +125,17 @@ async def gather_group(*tasks):
 
 
 async def ss_handler(reader, writer):
-    address = writer.get_extra_info('peername')
-    logging.debug('peername: {}'.format(address))
-    for key in ['compression', 'cipher', 'peercert', 'sslcontext', 'ssl_object']:
+    address = writer.get_extra_info("peername")
+    logging.debug("peername: {}".format(address))
+    for key in ["compression", "cipher", "peercert", "sslcontext", "ssl_object"]:
         data = writer.get_extra_info(key)
         if data:
-            logging.debug('{}: {}'.format(key, data))
-            if key == 'ssl_object':
-                logging.debug('version {}'.format(data.version()))
+            logging.debug("{}: {}".format(key, data))
+            if key == "ssl_object":
+                logging.debug("version {}".format(data.version()))
 
     write_lock = asyncio.Lock()
+
     async def client_write_callback(msg):
         await ss_write_callback(writer, write_lock, msg)
 
@@ -144,15 +154,15 @@ async def ss_handler(reader, writer):
             client.sync_task(),
         )
     except ConnectionResetError as e:
-        await client.handle_disconnect(reason='connection reset')
-    except asyncio.streams.IncompleteReadError as e:
-        await client.handle_disconnect(reason='incomplete read')
+        await client.handle_disconnect(reason="connection reset")
+    except asyncio.exceptions.IncompleteReadError as e:
+        await client.handle_disconnect(reason="incomplete read")
     except asyncio.TimeoutError as e:
-        await client.handle_disconnect(reason='receive timeout')
+        await client.handle_disconnect(reason="receive timeout")
     except Exception as e:
         logging.exception("gather exception")
     finally:
-        logging.debug('closing main_loop')
+        logging.debug("closing main_loop")
         writer.close()
 
 
@@ -167,19 +177,18 @@ async def command_handler(reader, writer):
                 writer.write(json.dumps(response).encode())
                 await writer.drain()
             elif isinstance(response, str):
-                if response.endswith('\n'):
+                if response.endswith("\n"):
                     writer.write(response.encode())
                 else:
-                    writer.write(response.encode() + b'\n')
+                    writer.write(response.encode() + b"\n")
                 await writer.drain()
     except Exception as e:
-        writer.write('Exception: {}\n'.format(e).encode())
+        writer.write("Exception: {}\n".format(e).encode())
         await writer.drain()
     writer.close()
 
 
 async def command_server():
-
     if settings.command_socket is None:
         return
 
@@ -189,47 +198,48 @@ async def command_server():
     )
 
     addr = server.sockets[0].getsockname()
-    print('Serving on {}'.format(addr))
+    print("Serving on {}".format(addr))
 
     async with server:
         await server.serve_forever()
 
 
 async def standard_server():
-
     server = await asyncio.start_server(
-        ss_handler, '0.0.0.0',
+        ss_handler,
+        "0.0.0.0",
         settings.listen_port,
     )
 
     addr = server.sockets[0].getsockname()
-    print('Serving on {}'.format(addr))
+    print("Serving on {}".format(addr))
 
     async with server:
         await server.serve_forever()
 
 
 async def ssl_server():
-
     sslctx = ssl.SSLContext(protocol=ssl.PROTOCOL_TLS_SERVER)
-    sslctx.set_ciphers("TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:AES256-SHA256")
+    sslctx.set_ciphers(
+        "TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256:AES256-SHA256"
+    )
     sslctx.load_cert_chain(settings.server_cert_file, settings.server_key_file)
 
     server = await asyncio.start_server(
-        ss_handler, '0.0.0.0',
+        ss_handler,
+        "0.0.0.0",
         settings.listen_ssl_port,
         ssl=sslctx,
     )
 
     addr = server.sockets[0].getsockname()
-    print('Serving on {}'.format(addr))
+    print("Serving on {}".format(addr))
 
     async with server:
         await server.serve_forever()
 
 
 async def reloader():
-
     while True:
         await asyncio.sleep(300)
         await tokendb.load()
@@ -252,8 +262,10 @@ async def main():
 class MqttThread(threading.Thread):
     def on_connect(self, *args, **kwargs):
         pass
+
     def on_message(self, *args, **kwargs):
         pass
+
     def run(self):
         while True:
             try:
@@ -264,10 +276,35 @@ class MqttThread(threading.Thread):
                 m.loop_start()
                 while True:
                     topic, payload, retain = mqtt_queue.get()
-                    m.publish('{}{}'.format(settings.mqtt_global_prefix, topic), payload, retain=retain)
+                    m.publish(
+                        "{}{}".format(settings.mqtt_global_prefix, topic),
+                        payload,
+                        retain=retain,
+                    )
             except Exception as e:
-                logging.exception('Exception in MqttThread')
+                logging.exception("Exception in MqttThread")
                 time.sleep(1)
+
+
+class EventLoggingThread(threading.Thread):
+    def run(self):
+        if settings.apprise_events:
+            apobj = apprise.Apprise()
+            apobj.add(settings.apprise_events)
+            apobj.notify("backend started")
+        while True:
+            event = event_queue.get()
+            event2 = event.copy()
+            for k in ["time", "millis", "clientid", "device", "event"]:
+                if k in event2:
+                    del event2[k]
+            timestamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(event["time"]))
+            remaining = json.dumps(event2, sort_keys=True) if event2 else ""
+            message = f"{timestamp} {event['device']} {event['event']} {remaining}"
+            if settings.apprise_events:
+                apobj.notify(body=message)
+            if settings.discord_events:
+                requests.post(settings.discord_events, json={"content": message})
 
 
 if settings.mqtt_host:
@@ -278,14 +315,24 @@ if settings.mqtt_host:
 else:
     mqtt_queue = None
 
+event_queue = queue.Queue()
+event_logging_thread = EventLoggingThread()
+event_logging_thread.daemon = True
+event_logging_thread.start()
+
 clientdb = ClientDB(settings.config_yaml)
-tokendb = TokenAuthDatabase(settings.api_download_url,
-                            settings.api_query_url,
-                            settings.api_auth_url,
-                            settings.api_token)
-clientfactory = toolman.ToolFactory(clientdb, tokendb, dbm.open(settings.toolstate_db, flag='c'))
+tokendb = TokenAuthDatabase(
+    settings.api_download_url,
+    settings.api_query_url,
+    settings.api_auth_url,
+    settings.api_token,
+)
+clientfactory = toolman.ToolFactory(
+    clientdb, tokendb, dbm.open(settings.toolstate_db, flag="c")
+)
 clientfactory.mqtt_queue = mqtt_queue
 clientfactory.mqtt_prefix = settings.mqtt_prefix
+clientfactory.event_queue = event_queue
 
 if settings.debug:
     logging.basicConfig(level=logging.DEBUG)
