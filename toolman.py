@@ -56,8 +56,6 @@ class Tool(Client):
     async def main_task(self):
         logging.debug("main_task() started")
 
-        self.last_pong_received = time.time()
-        last_ping_sent = time.time()
         last_motd = 0
 
         await self.send_mqtt("status", "online", retain=True, dedup=False)
@@ -66,20 +64,13 @@ class Tool(Client):
         last_statistics = time.time() - random.randint(0, 45)
 
         while True:
-            if time.time() - last_ping_sent > 30:
-                logging.debug("sending keepalive ping")
-                await self.send_message({"cmd": "ping", "timestamp": str(time.time())})
-                last_ping_sent = time.time()
-            if time.time() - self.last_pong_received > 65:
-                self.log("no pong received for >65 seconds")
-                raise Exception("no pong received for >65 seconds")
+            await self.loop()
             if time.time() - last_motd > 60:
                 await self.send_motd()
                 last_motd = time.time()
             if time.time() - last_statistics > 60:
                 await self.send_message({"cmd": "state_query"})
                 await self.send_message({"cmd": "metrics_query"})
-                await self.send_message({"cmd": "net_metrics_query"})
                 last_statistics = time.time()
             await asyncio.sleep(5)
 
