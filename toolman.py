@@ -48,7 +48,7 @@ class Tool(Client):
                 last_user.decode(), friendly_age(time.time() - last_user_time)
             )[0:20]
         else:
-            return self.clientdb.get_value(self.clientid, "motd", "")
+            return self.config.get("motd", "")
 
     async def send_motd(self):
         await self.send_message({"cmd": "motd", "motd": self.get_motd()})
@@ -58,7 +58,7 @@ class Tool(Client):
 
         last_motd = 0
 
-        await self.send_mqtt("status", "online", retain=True, dedup=False)
+        await self.set_states({"status": "online"})
 
         await self.send_message({"cmd": "state_query"})
         last_statistics = time.time() - random.randint(0, 45)
@@ -75,20 +75,17 @@ class Tool(Client):
             await asyncio.sleep(5)
 
     async def handle_cmd_state_info(self, message):
-        new_states = {}
+        states = {}
+        metrics = {}
 
         if "state" in message:
-            new_states["state"] = message["state"]
-            await self.send_mqtt("status", message["state"], True, dedup=True)
+            states["state"] = message["state"]
         if "milliamps" in message:
-            await self.send_mqtt("current", message["milliamps"] / 1000.0, True)
+            metrics["current"] = message["milliamps"] / 1000.0
         if "milliamps_simple" in message:
-            await self.send_mqtt(
-                "current_simple", message["milliamps_simple"] / 1000.0, True
-            )
+            metrics["current_simple"] = message["milliamps_simple"] / 1000.0
         if "user" in message:
-            new_states["user"] = message["user"]
-            await self.send_mqtt("user", message["user"], True, dedup=True)
+            states["user"] = message["user"]
             last_user = self.factory.toolstatedb.get(
                 "{}:last_user".format(self.clientid)
             )
@@ -99,26 +96,28 @@ class Tool(Client):
                 self.factory.toolstatedb[
                     "{}:last_user_time".format(self.clientid)
                 ] = str(time.time())
-                await self.send_mqtt("last_user", message["user"], True, dedup=True)
-        # if 'last_user' in message:
-        #    await self.send_mqtt('last_user', message['last_user'], True, dedup=True)
+                states["last_user"] = message["user"]
+        # if "last_user" in message:
+        #    states["last_user"] = message["last_user"]
 
-        await self.set_state(new_states)
+        await self.set_states(states, timestamp=message.pop("time", None))
+        await self.set_metrics(metrics, timestamp=message.pop("time", None))
 
 
 class ToolFactory(ClientFactory):
-    def __init__(self, tooldb, tokendb, toolstatedb):
-        self.clientdb = tooldb
+    def __init__(self, hooks, tokendb, toolstatedb):
+        self.hooks = hooks
         self.tokendb = tokendb
         self.toolstatedb = toolstatedb
         super(ToolFactory, self).__init__()
 
-    def client_from_auth(self, clientid, password, address=None):
+    async def client_from_auth(self, clientid, password, address=None):
         if clientid.startswith("toolman-"):
             clientid = clientid[8:]
-        if self.clientdb.authenticate(clientid, password):
+        config = await self.hooks.auth_device(clientid, password)
+        if config:
             client = Tool(
-                clientid, factory=self, address=address, mqtt_prefix=self.mqtt_prefix
+                clientid, factory=self, config=config, hooks=self.hooks, address=address
             )
             self.clients_by_id[clientid] = client
             self.clients_by_slug[client.slug] = client
