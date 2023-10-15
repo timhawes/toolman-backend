@@ -396,7 +396,7 @@ class Client:
             self.clientid, self.slug, states, timestamp=timestamp
         )
 
-    async def _sync_file(self, filename, size, md5, data):
+    async def _sync_file(self, filename, size, md5, data, dry_run=False):
         remote = await self.send_and_get_response(
             {"cmd": "file_query", "filename": filename},
             [{"cmd": "file_info", "filename": filename}],
@@ -407,6 +407,10 @@ class Client:
 
         if remote.get("md5") == md5 and remote.get("size") == size:
             self.logger.info(f"sync: {filename} is up to date")
+            return
+
+        if dry_run:
+            self.logger.info(f"sync: {filename} requires sync (dry-run mode)")
             return
 
         self.logger.info(f"sync: {filename} started")
@@ -467,7 +471,7 @@ class Client:
 
         self.logger.error(f"sync: {filename} no response")
 
-    async def _sync_firmware(self, size, md5, data):
+    async def _sync_firmware(self, size, md5, data, dry_run=False):
         if self.remote_firmware_active is None and self.remote_firmware_pending is None:
             self.logger.info("sync: firmware remote state is unknown")
             return
@@ -478,6 +482,10 @@ class Client:
 
         if self.remote_firmware_pending == md5:
             self.logger.info("sync: firmware is up to date (pending reboot)")
+            return
+
+        if dry_run:
+            self.logger.info("sync: firmware requires sync (dry-run mode)")
             return
 
         self.logger.info(f"sync: firmware started")
