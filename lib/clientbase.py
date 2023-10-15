@@ -555,6 +555,7 @@ class Client:
                 self.files[filename].get_size(),
                 self.files[filename].get_md5(),
                 self.files[filename].get_handle(),
+                dry_run=self.config.get("sync_dryrun", False),
             )
 
         if self.firmware:
@@ -562,6 +563,7 @@ class Client:
                 self.firmware["size"],
                 self.firmware["md5"],
                 self.firmware["handle"],
+                dry_run=self.config.get("sync_dryrun", False),
             )
 
         self.logger.debug("sync_task: loop ends")
