@@ -1,7 +1,7 @@
 import logging
 
 import aiohttp
-from fileloader import RemoteJsonFile
+import fileloader
 
 from .base import BaseHook
 
@@ -12,13 +12,16 @@ class HacklabTokens(BaseHook):
         self.auth_url = auth_url
 
         self.headers = {"X-API-Token": api_token}
-        self.tokens_file = RemoteJsonFile(
-            self.download_url, headers=self.headers, min_ttl=60
+        self.tokens_file = fileloader.get_loader().remote_file(
+            self.download_url,
+            headers=self.headers,
+            min_ttl=60,
+            text=True,
         )
 
     async def get_tokens(self):
-        async with self.tokens_file as data:
-            return data
+        async with self.tokens_file as file:
+            return file.parse()
 
     async def auth_token(
         self, uid, *, groups=None, exclude_groups=None, location=None, extra={}
@@ -42,9 +45,7 @@ class HacklabTokens(BaseHook):
         if response.get("found") is True:
             if response.get("authorized") is True:
                 username = response["username"]
-                logging.info(
-                    "token {} -> user {} -> ok (online auth)".format(uid, username)
-                )
+                logging.info(f"token {uid} -> user {username} -> ok (online auth)")
                 return {"uid": uid, "name": username, "access": 1}
             else:
                 logging.info(

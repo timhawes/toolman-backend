@@ -7,4 +7,9 @@ RUN pip install --require-hashes -r requirements.txt
 
 COPY . .
 
-CMD ["python", "./server.py"]
+ENV \
+  TOOLMAN_CACHE_PATH=/cache \
+  TOOLMAN_COMMAND_SOCKET=/run/toolman.sock
+
+CMD ["./server.py"]
+VOLUME ["/cache"]

@@ -1,14 +1,15 @@
 import asyncio
 import base64
 import datetime
-import hashlib
-import io
 import json
 import logging
 import os
 import random
 import time
 from dataclasses import dataclass
+
+import fileloader
+import settings
 
 
 def is_uid(uid):
@@ -57,127 +58,6 @@ def legacy_config(files):
     return data
 
 
-class BaseSyncableFile:
-    def __init__(self):
-        self.remote_md5 = None
-        self.remote_size = None
-        self.remote_time = 0
-        self.metadata_ready = asyncio.Event()
-        self.sync_complete = asyncio.Event()
-
-    def get_handle(self):
-        raise NotImplementedError
-
-    def get_md5(self):
-        raise NotImplementedError
-
-    def get_size(self):
-        raise NotImplementedError
-
-    def needSync(self):
-        # self.logger.debug('needSync remote={}/{} vs local={}/{}'.format(self.remote_md5, self.remote_size, self.md5, self.size))
-        if self.remote_md5 == self.md5 and self.remote_size == self.size:
-            self.sync_complete.set()
-            return False
-        else:
-            self.sync_complete.clear()
-            return True
-
-    async def waitForSync(self):
-        await self.sync_complete.wait()
-
-    def needMetadata(self):
-        if self.remote_time == 0 or time.time() - self.remote_time > 300:
-            self.metadata_ready.clear()
-            return True
-        else:
-            self.metadata_ready.set()
-            return False
-
-    async def waitForMetadata(self):
-        await self.metadata_ready.wait()
-
-    def remote(self, md5, size):
-        # self.logger.debug('recording remote metadata md5={} size={}'.format(md5, size))
-        self.remote_md5 = md5
-        self.remote_size = size
-        self.remote_time = time.time()
-        self.metadata_ready.set()
-        self.needSync()
-
-    def syncDone(self):
-        self.sync_complete.set()
-
-
-class SyncableStringFile(BaseSyncableFile):
-    def __init__(self, filename, data):
-        self.filename = filename
-        self.data = None
-        self.update(data)
-        super(SyncableStringFile, self).__init__()
-
-    def update(self, data=None):
-        if data is not None:
-            if data != self.data:
-                self.data = data
-                self.md5 = hashlib.md5(data).hexdigest()
-                self.size = len(data)
-                self.handle = None
-                return True
-            else:
-                return False
-
-    def get_handle(self):
-        if self.handle is None:
-            self.handle = io.BytesIO(self.data)
-        return self.handle
-
-    def check(self):
-        pass
-
-    def get_size(self):
-        return self.size
-
-    def get_md5(self):
-        return self.md5
-
-
-class SyncableDiskFile(BaseSyncableFile):
-    def __init__(self, filename):
-        self.filename = filename
-        self.size = None
-        self.md5 = None
-        self.update(filename)
-        super(SyncableDiskFile, self).__init__()
-
-    def update(self, filename=None):
-        if filename:
-            self.filename = filename
-        new_size = os.path.getsize(filename)
-        new_md5 = hashlib.md5()
-        for chunk in open(filename, "rb"):
-            new_md5.update(chunk)
-        if new_size != self.size or new_md5.hexdigest() != self.md5:
-            self.size = new_size
-            self.md5 = new_md5.hexdigest()
-            self.handle = None
-            self.get_handle()
-            return True
-        else:
-            return False
-
-    def get_handle(self):
-        if self.handle is None:
-            self.handle = open(self.filename, "rb")
-        return self.handle
-
-    def get_size(self):
-        return self.size
-
-    def get_md5(self):
-        return self.md5
-
-
 @dataclass
 class MessageCallback:
     filters: list
@@ -200,14 +80,17 @@ class Client:
         self.connect_start = time.time()
         self.connect_finish = None
 
-        # initial value for slug
-        self.slug = self.config.get("slug", self.clientid)
+        # initial value for name
+        self.name = self.config.get("name") or self.config.get("slug") or self.clientid
 
         # chunk size for syncs
         self.chunk_size = self.config.get("sync_chunk_size", 256)
 
         # configure logging
-        self.logger = logging.getLogger(f"client.{self.clientid}/{self.slug}")
+        self.logger = logging.getLogger(f"client.{self.clientid}/{self.name}")
+
+        # file loader
+        self.loader = fileloader.get_loader()
 
         # asyncio network streams, will be populated by the factory
         self.reader = None
@@ -251,8 +134,8 @@ class Client:
     def __str__(self):
         if self.writer:
             tags = [
-                "slug={}".format(self.slug),
-                "clientid={}".format(self.clientid),
+                f"name={self.name}",
+                f"clientid={self.clientid}",
             ]
             peername = self.writer.get_extra_info("peername")
             if peername:
@@ -262,9 +145,9 @@ class Client:
                 tags.append("cipher={}:{}:{}".format(*cipher))
             return "<{} {}>".format(self.__class__.__name__, " ".join(tags))
         else:
-            return "<{} clientid={}>".format(self.__class__.__name__, self.clientid)
+            return f"<{self.__class__.__name__} clientid={self.clientid}>"
 
-    async def reload_settings(self, create=False):
+    async def reload_settings(self):
         self.config = await self.hooks.get_device(self.clientid)
 
         self.token_groups = self.config.get("groups")
@@ -274,33 +157,51 @@ class Client:
             exclude_groups=self.token_exclude_groups,
             salt=self.config.get("token_salt").encode(),
         )
-        if create:
-            self.files["tokens.dat"] = SyncableStringFile("tokens.dat", token_data)
-        else:
+        if "tokens.dat" in self.files:
             self.files["tokens.dat"].update(token_data)
+        else:
+            self.files["tokens.dat"] = self.loader.memory_file(
+                token_data, filename="tokens.dat"
+            )
 
         for filename, filedata in self.config.get("files").items():
-            content = render_file(filename, filedata)
-            if create:
-                self.files[filename] = SyncableStringFile(filename, content)
+            if filedata is None:
+                self.files[filename] = None
             else:
-                self.files[filename].update(content)
+                content = render_file(filename, filedata)
+                if filename in self.files:
+                    self.files[filename].update(content)
+                else:
+                    self.files[filename] = self.loader.memory_file(
+                        content, filename=filename
+                    )
 
         firmware_filename = self.config.get("firmware")
         if firmware_filename:
-            self.firmware = await self.get_firmware(firmware_filename)
+            if firmware_filename.startswith("https://") or firmware_filename.startswith(
+                "http://"
+            ):
+                self.firmware = self.loader.remote_file(
+                    firmware_filename, default_ttl=28800
+                )
+            elif firmware_filename.startswith("/"):
+                self.firmware = self.loader.local_file(firmware_filename)
+            else:
+                self.firmware = self.loader.local_file(
+                    os.path.join(settings.FIRMWARE_PATH, firmware_filename)
+                )
 
         try:
             legacy_config_json = render_file(
                 "config.json",
                 legacy_config(self.config.get("files")),
             )
-            if create:
-                self.files["config.json"] = SyncableStringFile(
-                    "config.json", legacy_config_json
-                )
-            else:
+            if "config.json" in self.files:
                 self.files["config.json"].update(legacy_config_json)
+            else:
+                self.files["config.json"] = self.loader.memory_file(
+                    legacy_config_json, filename="config.json"
+                )
         except Exception as e:
             logging.exception("Skipping legacy config.json", e)
 
@@ -309,18 +210,18 @@ class Client:
             "clientid": self.clientid,
             "address": f"{self.address[0]}:{self.address[1]}",
             "connected": self.connected,
-            "slug": self.slug,
+            "name": self.name,
             "metrics": self.metrics,
             "states": self.states,
             "files": self.remote_files,
         }
         if self.connect_start:
             status["connect_start"] = datetime.datetime.fromtimestamp(
-                self.connect_start, datetime.timezone.utc
+                self.connect_start, datetime.UTC
             ).isoformat()
         if self.connect_finish:
             status["connect_finish"] = datetime.datetime.fromtimestamp(
-                self.connect_finish, datetime.timezone.utc
+                self.connect_finish, datetime.UTC
             ).isoformat()
         if self.connected:
             status["connect_uptime"] = int(time.time() - self.connect_start)
@@ -335,7 +236,7 @@ class Client:
     def log(self, message):
         self.logger.info(
             "{}:{} {}/{} {}".format(
-                self.address[0], self.address[1], self.clientid, self.slug, message
+                self.address[0], self.address[1], self.clientid, self.name, message
             )
         )
 
@@ -343,33 +244,12 @@ class Client:
         if event.get("time") is None:
             event["time"] = time.time()
         event["clientid"] = self.clientid
-        event["device"] = self.slug
+        event["device"] = self.name
         self.logger.info(f"event {event}")
         await self.factory.hooks.log_event(event)
 
-    async def get_firmware(self, filename):
-        """Prepare file handle and metadata for the specified firmware file."""
-
-        filename = os.path.join(os.environ.get("FIRMWARE_PATH", "firmware"), filename)
-
-        try:
-            data = {
-                "filename": filename,
-                "handle": open(filename, "rb"),
-                "md5": None,
-                "size": os.path.getsize(filename),
-            }
-            md5 = hashlib.md5()
-            for chunk in data["handle"]:
-                md5.update(chunk)
-            data["md5"] = md5.hexdigest()
-            return data
-        except FileNotFoundError:
-            self.logger.error("firmware {} not found".format(filename))
-            return None
-
     async def send_message(self, message):
-        self.logger.info("send {}".format(self.loggable_message(message)))
+        self.logger.info(f"send {self.loggable_message(message)}")
         await self.write_callback(message)
 
     async def send_and_get_response(self, message, filters, timeout=5):
@@ -379,7 +259,7 @@ class Client:
         try:
             await asyncio.wait_for(cb.event.wait(), timeout=timeout)
             return cb.response
-        except asyncio.TimeoutError:
+        except TimeoutError:
             self.logger.warn(f"callback timeout waiting for {filters}")
         finally:
             self.callbacks.remove(cb)
@@ -387,13 +267,13 @@ class Client:
     async def set_metrics(self, metrics, timestamp=None):
         self.metrics.update(metrics)
         await self.factory.hooks.log_metrics(
-            self.clientid, self.slug, metrics, timestamp=timestamp
+            self.clientid, self.name, metrics, timestamp=timestamp
         )
 
     async def set_states(self, states, timestamp=None):
         self.states.update(states)
         await self.factory.hooks.log_states(
-            self.clientid, self.slug, states, timestamp=timestamp
+            self.clientid, self.name, states, timestamp=timestamp
         )
 
     async def _sync_file(self, filename, size, md5, data, dry_run=False):
@@ -418,8 +298,8 @@ class Client:
             {
                 "event": "file_sync_start",
                 "filename": filename,
-                "size": self.files[filename].get_size(),
-                "md5": self.files[filename].get_md5(),
+                "size": size,
+                "md5": md5,
             }
         )
 
@@ -471,6 +351,38 @@ class Client:
 
         self.logger.error(f"sync: {filename} no response")
 
+    async def _sync_delete_file(self, filename, dry_run=False):
+        remote = await self.send_and_get_response(
+            {"cmd": "file_query", "filename": filename},
+            [{"cmd": "file_info", "filename": filename}],
+        )
+        if not remote:
+            self.logger.warn(f"sync: {filename} no response to file_query")
+            return
+
+        if remote.get("md5") is None and remote.get("size") is None:
+            self.logger.info(f"sync: {filename} is up to date (deleted)")
+            return
+
+        if dry_run:
+            self.logger.info(f"sync: {filename} requires deletion (dry-run mode)")
+            return
+
+        self.logger.info(f"sync: {filename} deleting")
+        await self.log_event(
+            {
+                "event": "file_delete",
+                "filename": filename,
+            }
+        )
+
+        await self.send_message(
+            {
+                "cmd": "file_delete",
+                "filename": filename,
+            }
+        )
+
     async def _sync_firmware(self, size, md5, data, dry_run=False):
         if self.remote_firmware_active is None and self.remote_firmware_pending is None:
             self.logger.info("sync: firmware remote state is unknown")
@@ -488,7 +400,7 @@ class Client:
             self.logger.info("sync: firmware requires sync (dry-run mode)")
             return
 
-        self.logger.info(f"sync: firmware started")
+        self.logger.info("sync: firmware started")
         await self.log_event(
             {
                 "event": "firmware_sync_start",
@@ -518,7 +430,7 @@ class Client:
                 return
             if response["cmd"] == "firmware_write_ok":
                 self.remote_firmware_pending = md5
-                self.logger.info(f"sync: firmware complete")
+                self.logger.info("sync: firmware complete")
                 await self.log_event(
                     {
                         "event": "firmware_sync_complete",
@@ -542,29 +454,41 @@ class Client:
                 await self.set_states({"firmware_progress": progress})
                 response = await self.send_and_get_response(file_data, filters)
 
-        self.logger.error(f"sync: firmware no response")
+        self.logger.error("sync: firmware no response")
 
     async def _sync_loop(self):
         self.logger.debug("sync_task: loop begins")
 
         await self.reload_settings()
 
-        for filename in self.files.keys():
-            await self._sync_file(
-                filename,
-                self.files[filename].get_size(),
-                self.files[filename].get_md5(),
-                self.files[filename].get_handle(),
-                dry_run=self.config.get("sync_dryrun", False),
-            )
+        if settings.SYNC_FILES:
+            for filename in self.files.keys():
+                if self.files[filename] is None:
+                    await self._sync_delete_file(filename)
+                else:
+                    async with self.files[filename] as f:
+                        await self._sync_file(
+                            filename,
+                            f.size,
+                            f.md5,
+                            f.handle,
+                            dry_run=self.config.get("sync_dryrun", False),
+                        )
 
-        if self.firmware:
-            await self._sync_firmware(
-                self.firmware["size"],
-                self.firmware["md5"],
-                self.firmware["handle"],
-                dry_run=self.config.get("sync_dryrun", False),
-            )
+        if settings.SYNC_FIRMWARE and self.firmware:
+            try:
+                self.logger.debug(f"sync_task: firmware syncing {self.firmware}")
+                async with self.firmware as f:
+                    await self._sync_firmware(
+                        f.size,
+                        f.md5,
+                        f.handle,
+                        dry_run=self.config.get("sync_dryrun", False),
+                    )
+            except FileNotFoundError:
+                self.logger.warn("fsync_task: firmware file not found")
+            except Exception:
+                self.logger.exception("sync_task: exception")
 
         self.logger.debug("sync_task: loop ends")
 
@@ -575,8 +499,8 @@ class Client:
             await asyncio.sleep(180)
 
     async def handle_connect(self):
-        self.logger.info("connect {}".format(self))
-        await self.reload_settings(True)
+        self.logger.info(f"connect {self}")
+        await self.reload_settings()
         event = {
             "event": "connect",
             "address": "{}:{}".format(*self.writer.get_extra_info("peername")),
@@ -600,16 +524,16 @@ class Client:
         self.connect_finish = time.time()
         self.connected = False
         if self.factory.client_from_id(self.clientid) is self:
-            self.logger.info("disconnect: {} (final)".format(reason))
+            self.logger.info(f"disconnect: {reason} (final)")
             await self.log_event({"event": "disconnect"})
             await self.set_states({"status": "offline", "address": None})
         else:
-            self.logger.info("disconnect: {} (replaced)".format(reason))
+            self.logger.info(f"disconnect: {reason} (replaced)")
 
     async def handle_message(self, message):
         """Handle and dispatch an incoming message from the client."""
 
-        self.logger.info("recv {}".format(self.loggable_message(message)))
+        self.logger.info(f"recv {self.loggable_message(message)}")
 
         handled_by_callback = False
 
@@ -654,6 +578,13 @@ class Client:
                 "md5": message["md5"],
                 "size": message["size"],
             }
+
+    async def handle_cmd_file_delete_ok(self, message):
+        filename = message["filename"]
+        try:
+            del self.remote_files[filename]
+        except KeyError:
+            pass
 
     async def handle_cmd_metrics_info(self, message):
         metrics = message.copy()
@@ -714,7 +645,7 @@ class Client:
             message["uid"],
             groups=self.token_groups,
             exclude_groups=self.token_exclude_groups,
-            location="{}:{}".format(self.__class__.__name__.lower(), self.slug),
+            location=f"{self.__class__.__name__.lower()}:{self.name}",
             extra={"counter": message.get("ntag_counter", None)},
         )
         if result:
@@ -754,7 +685,7 @@ class Client:
 class ClientFactory:
     def __init__(self):
         self.clients_by_id = {}
-        self.clients_by_slug = {}
+        self.clients_by_name = {}
 
     def client_from_id(self, clientid):
         try:
@@ -762,9 +693,9 @@ class ClientFactory:
         except KeyError:
             return None
 
-    def client_from_slug(self, slug):
+    def client_from_name(self, name):
         try:
-            return self.clients_by_slug[slug]
+            return self.clients_by_name[name]
         except KeyError:
             return None
 
@@ -776,25 +707,25 @@ class ClientFactory:
             if client:
                 client.reader = reader
                 client.writer = writer
-                logging.info("client_from_hello -> {}".format(client))
+                logging.info(f"client_from_hello -> {client}")
                 return client
             else:
                 logging.info("client_from_hello -> auth failed")
 
     async def command(self, message):
-        logging.info("command received: {}".format(message))
+        logging.info(f"command received: {message}")
 
         if message.get("cmd") == "list-all":
             output = {}
             for clientid in self.clients_by_id.keys():
-                output[clientid] = self.clients_by_id[clientid].slug
+                output[clientid] = self.clients_by_id[clientid].name
             return json.dumps(output, sort_keys=True)
 
         if message.get("cmd") == "list":
             output = {}
             for clientid in self.clients_by_id.keys():
                 if self.clients_by_id[clientid].connected:
-                    output[clientid] = self.clients_by_id[clientid].slug
+                    output[clientid] = self.clients_by_id[clientid].name
             return json.dumps(output, sort_keys=True)
 
         if message.get("cmd") == "status":
@@ -807,17 +738,17 @@ class ClientFactory:
             for client in self.clients_by_id.values():
                 try:
                     client.writer.close()
-                except:
+                except Exception:
                     pass
             return "OK"
 
         client = None
         if "id" in message:
-            client = self.client_from_id(message["id"]) or self.client_from_slug(
+            client = self.client_from_id(message["id"]) or self.client_from_name(
                 message["id"]
             )
-        if "slug" in message:
-            client = self.client_from_slug(message["slug"])
+        if "name" in message:
+            client = self.client_from_name(message["name"])
         if "clientid" in message:
             client = self.client_from_id(message["clientid"])
         if not client:

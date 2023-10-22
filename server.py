@@ -11,45 +11,15 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(sys.argv[0]), "lib"))
 
 from hooks.dispatcher import HookDispatcher
-from hooks.localdeviceconfig import LocalDeviceConfig
+from hooks.localconfig import LocalConfig
 from hooks.hacklabtokens import HacklabTokens
 from hooks.mqttmetrics import MqttMetrics
+from hooks.appriseevents import AppriseEvents
 from hooks.discordevents import DiscordEvents
-from hooks.localtokens import LocalTokens
 from hooks.logdebug import LogDebug
 import toolman
 import tokendb
-
-DEFAULT_NOTIFY_EVENTS = "backend_start connect disconnect restarted file_sync_start file_sync_complete firmware_sync_start firmware_sync_complete"
-
-
-class settings:
-    mqtt_host = os.environ.get("MQTT_HOST")
-    mqtt_port = int(os.environ.get("MQTT_PORT", "1883"))
-    mqtt_prefix = os.environ.get("MQTT_PREFIX", "tool/")
-    server_cert_file = os.environ.get("SERVER_CERT_FILE")
-    server_key_file = os.environ.get("SERVER_KEY_FILE")
-    listen_host = os.environ.get("LISTEN_HOST", "0.0.0.0")
-    listen_port = int(os.environ.get("LISTEN_PORT", 13260))
-    listen_ssl_port = int(os.environ.get("LISTEN_SSL_PORT", 13261))
-    firmware_path = os.environ.get("FIRMWARE_PATH", "firmware")
-    config_yaml = os.environ.get("CONFIG_YAML", "config/config.yaml")
-    local_tokens_file = os.environ.get("LOCAL_TOKENS_FILE")
-    api_download_url = os.environ.get("API_DOWNLOAD_URL")
-    api_auth_url = os.environ.get("API_AUTH_URL")
-    api_token = os.environ.get("API_TOKEN")
-    toolstate_db = os.environ.get("TOOLSTATE_DB", "toolstate-db")
-    command_socket = os.environ.get("COMMAND_SOCKET")
-    apprise_urls = os.environ.get("APPRISE_URL", "").strip().split()
-    apprise_events = os.environ.get("APPRISE_EVENTS", "").strip().split()
-    discord_webhook = os.environ.get("DISCORD_WEBHOOK")
-    discord_events = (
-        os.environ.get("DISCORD_EVENTS", DEFAULT_NOTIFY_EVENTS).strip().split()
-    )
-    if os.environ.get("DEBUG_MODE"):
-        debug = True
-    else:
-        debug = False
+import settings
 
 
 async def read_packet(stream, len_bytes=1):
@@ -101,10 +71,10 @@ async def ss_reader(reader, callback, timeout=180):
             try:
                 msg = json.loads(data)
             except UnicodeDecodeError:
-                logging.exception("Error processing received packet {}".format(data))
+                logging.exception(f"Error processing received packet {data}")
                 return
             except json.JSONDecodeError:
-                logging.exception("Error processing received packet {}".format(data))
+                logging.exception(f"Error processing received packet {data}")
                 return
             await callback(msg)
         else:
@@ -122,20 +92,20 @@ async def gather_group(*tasks):
     gathering = asyncio.gather(*tasks)
     try:
         return await gathering
-    except Exception as e:
+    except Exception:
         [task.cancel() for task in gathering._children]
         raise
 
 
 async def ss_handler(reader, writer):
     address = writer.get_extra_info("peername")
-    logging.debug("peername: {}".format(address))
+    logging.debug(f"peername: {address}")
     for key in ["compression", "cipher", "peercert", "sslcontext", "ssl_object"]:
         data = writer.get_extra_info(key)
         if data:
-            logging.debug("{}: {}".format(key, data))
+            logging.debug(f"{key}: {data}")
             if key == "ssl_object":
-                logging.debug("version {}".format(data.version()))
+                logging.debug(f"version {data.version()}")
 
     write_lock = asyncio.Lock()
 
@@ -149,7 +119,7 @@ async def ss_handler(reader, writer):
         else:
             writer.close()
             return
-    except Exception as e:
+    except Exception:
         logging.exception(f"Exception creating client for {address}")
         writer.close()
         return
@@ -161,13 +131,13 @@ async def ss_handler(reader, writer):
             client.main_task(),
             client.sync_task(),
         )
-    except ConnectionResetError as e:
+    except ConnectionResetError:
         await client.handle_disconnect(reason="connection reset")
-    except asyncio.exceptions.IncompleteReadError as e:
+    except asyncio.exceptions.IncompleteReadError:
         await client.handle_disconnect(reason="incomplete read")
-    except asyncio.TimeoutError as e:
+    except TimeoutError:
         await client.handle_disconnect(reason="receive timeout")
-    except Exception as e:
+    except Exception:
         logging.exception("gather exception")
     finally:
         logging.debug("closing main_loop")
@@ -175,7 +145,6 @@ async def ss_handler(reader, writer):
 
 
 async def command_handler(reader, writer):
-    print("command handler connection in progress...")
     try:
         data = await reader.read()
         if len(data) > 0:
@@ -191,57 +160,63 @@ async def command_handler(reader, writer):
                     writer.write(response.encode() + b"\n")
                 await writer.drain()
     except Exception as e:
-        writer.write("Exception: {}\n".format(e).encode())
+        writer.write(f"Exception: {e}\n".encode())
         await writer.drain()
     writer.close()
 
 
 async def command_server():
-    if settings.command_socket is None:
+    if settings.COMMAND_SOCKET is None:
         return
 
     server = await asyncio.start_unix_server(
         command_handler,
-        settings.command_socket,
+        settings.COMMAND_SOCKET,
     )
 
     addr = server.sockets[0].getsockname()
-    print("Serving on {}".format(addr))
+    logging.info(f"Serving commands on {addr}")
 
     async with server:
         await server.serve_forever()
 
 
 async def standard_server():
+    if not settings.INSECURE_PORT:
+        logging.warning("Insecure server not configured")
+        return
+
     server = await asyncio.start_server(
         ss_handler,
         "0.0.0.0",
-        settings.listen_port,
+        settings.INSECURE_PORT,
     )
 
     addr = server.sockets[0].getsockname()
-    print("Serving on {}".format(addr))
+    logging.info(f"Serving insecure on {addr}")
 
     async with server:
         await server.serve_forever()
 
 
 async def ssl_server():
+    if not (settings.TLS_PORT and settings.TLS_CERT_FILE and settings.TLS_KEY_FILE):
+        logging.warning("TLS server not configured")
+        return
+
     sslctx = ssl.SSLContext(protocol=ssl.PROTOCOL_TLS_SERVER)
-    sslctx.set_ciphers(
-        "TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256:AES256-SHA256"
-    )
-    sslctx.load_cert_chain(settings.server_cert_file, settings.server_key_file)
+    sslctx.set_ciphers(settings.TLS_CIPHERS)
+    sslctx.load_cert_chain(settings.TLS_CERT_FILE, settings.TLS_KEY_FILE)
 
     server = await asyncio.start_server(
         ss_handler,
         "0.0.0.0",
-        settings.listen_ssl_port,
+        settings.TLS_PORT,
         ssl=sslctx,
     )
 
     addr = server.sockets[0].getsockname()
-    print("Serving on {}".format(addr))
+    logging.info(f"Serving TLS on {addr}")
 
     async with server:
         await server.serve_forever()
@@ -254,39 +229,50 @@ async def main():
             standard_server(),
             ssl_server(),
         )
-    except Exception as e:
+    except Exception:
         logging.exception("gather exception")
 
 
-if settings.debug:
+if settings.DEBUG:
     logging.basicConfig(level=logging.DEBUG)
 else:
     logging.basicConfig(level=logging.INFO)
 
 hooks = HookDispatcher()
-hooks.add_hook(LocalDeviceConfig(settings.config_yaml))
+hooks.add_hook(
+    LocalConfig(
+        devices=settings.DEVICES_FILE,
+        profiles=settings.PROFILES_FILE,
+        tokens=settings.TOKENS_FILE,
+    )
+)
 hooks.add_hook(LogDebug())
-if settings.local_tokens_file:
-    hooks.add_hook(LocalTokens(settings.local_tokens_file))
-if settings.api_download_url and settings.api_auth_url and settings.api_token:
+if settings.REMOTE_TOKENS_URL and settings.REMOTE_AUTH_URL and settings.REMOTE_SECRET:
     hooks.add_hook(
         HacklabTokens(
-            settings.api_download_url, settings.api_auth_url, settings.api_token
+            settings.REMOTE_TOKENS_URL, settings.REMOTE_AUTH_URL, settings.REMOTE_SECRET
         )
     )
-if settings.mqtt_host:
+if settings.MQTT_HOST:
     hooks.add_hook(
         MqttMetrics(
-            settings.mqtt_host, port=settings.mqtt_port, prefix=settings.mqtt_prefix
+            settings.MQTT_HOST, port=settings.MQTT_PORT, prefix=settings.MQTT_PREFIX
         )
     )
-if settings.discord_webhook:
+if settings.APPRISE_URLS:
     hooks.add_hook(
-        DiscordEvents(settings.discord_webhook, discord_events=settings.discord_events)
+        AppriseEvents(settings.APPRISE_URLS, apprise_events=settings.APPRISE_EVENTS)
+    )
+if settings.DISCORD_WEBHOOK:
+    hooks.add_hook(
+        DiscordEvents(settings.DISCORD_WEBHOOK, discord_events=settings.DISCORD_EVENTS)
     )
 
 tokendb = tokendb.TokenAuthDatabase(hooks)
-toolstatedb = dbm.open(settings.toolstate_db, flag="c")
+if settings.TOOLSTATE_FILE:
+    toolstatedb = dbm.open(settings.TOOLSTATE_FILE, flag="c")
+else:
+    toolstatedb = {}
 clientfactory = toolman.ToolFactory(hooks, tokendb, toolstatedb)
 
 asyncio.run(main())

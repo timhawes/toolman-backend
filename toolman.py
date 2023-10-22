@@ -39,10 +39,11 @@ def friendly_age(t):
 
 class Tool(Client):
     def get_motd(self):
-        last_user = self.factory.toolstatedb.get("{}:last_user".format(self.clientid))
-        last_user_time = float(
-            self.factory.toolstatedb.get("{}:last_user_time".format(self.clientid), 0)
-        )
+        if self.factory.toolstatedb:
+            last_user = self.factory.toolstatedb.get(f"{self.clientid}:last_user")
+            last_user_time = float(
+                self.factory.toolstatedb.get(f"{self.clientid}:last_user_time", 0)
+            )
         if last_user and last_user_time > 0:
             return "{:.10}, {}".format(
                 last_user.decode(), friendly_age(time.time() - last_user_time)
@@ -86,16 +87,12 @@ class Tool(Client):
             metrics["current_simple"] = message["milliamps_simple"] / 1000.0
         if "user" in message:
             states["user"] = message["user"]
-            last_user = self.factory.toolstatedb.get(
-                "{}:last_user".format(self.clientid)
-            )
+            last_user = self.factory.toolstatedb.get(f"{self.clientid}:last_user")
             if message["user"] != "" and message["user"] != last_user:
-                self.factory.toolstatedb[
-                    "{}:last_user".format(self.clientid)
-                ] = message["user"]
-                self.factory.toolstatedb[
-                    "{}:last_user_time".format(self.clientid)
-                ] = str(time.time())
+                self.factory.toolstatedb[f"{self.clientid}:last_user"] = message["user"]
+                self.factory.toolstatedb[f"{self.clientid}:last_user_time"] = str(
+                    time.time()
+                )
                 states["last_user"] = message["user"]
         # if "last_user" in message:
         #    states["last_user"] = message["last_user"]
@@ -109,7 +106,7 @@ class ToolFactory(ClientFactory):
         self.hooks = hooks
         self.tokendb = tokendb
         self.toolstatedb = toolstatedb
-        super(ToolFactory, self).__init__()
+        super().__init__()
 
     async def client_from_auth(self, clientid, password, address=None):
         if clientid.startswith("toolman-"):
@@ -120,8 +117,8 @@ class ToolFactory(ClientFactory):
                 clientid, factory=self, config=config, hooks=self.hooks, address=address
             )
             self.clients_by_id[clientid] = client
-            self.clients_by_slug[client.slug] = client
+            self.clients_by_name[client.name] = client
             return client
         else:
-            logging.info("client {} auth failed (address={})".format(clientid, address))
+            logging.info(f"client {clientid} auth failed (address={address})")
         return None
