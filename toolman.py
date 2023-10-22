@@ -39,11 +39,10 @@ def friendly_age(t):
 
 class Tool(Client):
     def get_motd(self):
-        if self.factory.toolstatedb:
-            last_user = self.factory.toolstatedb.get(f"{self.clientid}:last_user")
-            last_user_time = float(
-                self.factory.toolstatedb.get(f"{self.clientid}:last_user_time", 0)
-            )
+        last_user = self.factory.toolstatedb.get(f"{self.clientid}:last_user")
+        last_user_time = float(
+            self.factory.toolstatedb.get(f"{self.clientid}:last_user_time", 0)
+        )
         if last_user and last_user_time > 0:
             return "{:.10}, {}".format(
                 last_user.decode(), friendly_age(time.time() - last_user_time)
