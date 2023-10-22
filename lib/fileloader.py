@@ -288,6 +288,7 @@ class RemoteFile:
         self.md5 = None
         self.last_modified = None
         self.etag = None
+        self.content_type = None
         self.fresh_until = None
         self.stale_while_revalidate_until = None
         self.stale_if_error_until = None
@@ -313,6 +314,7 @@ class RemoteFile:
             with open(path + ".meta") as f:
                 meta = json.load(f)
                 self.etag = meta["etag"]
+                self.content_type = meta.get("content_type")
                 self.last_modified = meta["last_modified"]
                 self.fresh_until = meta["fresh_until"]
                 self.stale_while_revalidate_until = meta["stale_while_revalidate_until"]
@@ -332,6 +334,7 @@ class RemoteFile:
             self.size = None
             self.md5 = None
             self.etag = None
+            self.content_type = None
             self.fresh_until = None
             self.stale_while_revalidate_until = None
             self.stale_if_error_until = None
@@ -362,6 +365,7 @@ class RemoteFile:
                 json.dumps(
                     {
                         "etag": self.etag,
+                        "content_type": self.content_type,
                         "last_modified": self.last_modified,
                         "fresh_until": self.fresh_until,
                         "stale_while_revalidate_until": self.stale_while_revalidate_until,
@@ -407,6 +411,7 @@ class RemoteFile:
                         self.stale_while_revalidate_until = cc[1]
                         self.stale_if_error_until = cc[2]
                         self.etag = response.headers.get("etag")
+                        self.content_type = response.headers.get("content-type")
                         self.last_modified = response.headers.get("last-modified")
                         self.last_read = time.time()
                         self._last_update = time.time()
@@ -449,9 +454,7 @@ class RemoteFile:
                         response.raise_for_status()
 
     def parse(self):
-        return auto_parse(
-            self.content, content_type=self.response_headers["content-type"]
-        )
+        return auto_parse(self.content, content_type=self.content_type)
 
     async def __aenter__(self):
         await self.load()
