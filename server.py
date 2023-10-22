@@ -269,10 +269,7 @@ if settings.DISCORD_WEBHOOK:
     )
 
 tokendb = tokendb.TokenAuthDatabase(hooks)
-if settings.TOOLSTATE_FILE:
-    toolstatedb = dbm.open(settings.TOOLSTATE_FILE, flag="c")
-else:
-    toolstatedb = {}
+toolstatedb = dbm.open(settings.TOOLSTATE_FILE, flag="c")
 clientfactory = toolman.ToolFactory(hooks, tokendb, toolstatedb)
 
 asyncio.run(main())
