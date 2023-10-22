@@ -11,8 +11,6 @@ import urllib.parse
 import aiohttp
 import yaml
 
-import settings
-
 
 def hashed_cache_key(*args, **kwargs):
     output = []
@@ -465,14 +463,12 @@ class RemoteFile:
 
 
 class Loader:
-    def __init__(self, cache_dir=None):
-        self.cache_dir = cache_dir
+    def __init__(self):
+        self.cache_dir = None
         self.files = {}
 
-        if cache_dir:
-            logging.debug(f"{self} created with cache {cache_dir}")
-        else:
-            logging.debug(f"{self} created without cache")
+    def set_cache_dir(self, cache_dir):
+        self.cache_dir = cache_dir
 
     def memory_file(self, data, text=False, filename=None):
         return MemoryFile(data, text=text, filename=filename)
@@ -504,5 +500,5 @@ loader = None
 def get_loader():
     global loader
     if loader is None:
-        loader = Loader(cache_dir=settings.CACHE_PATH)
+        loader = Loader()
     return loader
