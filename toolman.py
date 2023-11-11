@@ -4,7 +4,7 @@ import logging
 import random
 import time
 
-from clientbase import Client, ClientFactory
+from clientbase import CommonConnection, CommonManager
 
 
 def encode_tune(tune):
@@ -37,11 +37,13 @@ def friendly_age(t):
         return "just now"
 
 
-class Tool(Client):
+class ToolConnection(CommonConnection):
+    client_strip_prefix = "toolman-"
+
     def get_motd(self):
-        last_user = self.factory.toolstatedb.get(f"{self.clientid}:last_user")
+        last_user = self.manager.toolstatedb.get(f"{self.clientid}:last_user")
         last_user_time = float(
-            self.factory.toolstatedb.get(f"{self.clientid}:last_user_time", 0)
+            self.manager.toolstatedb.get(f"{self.clientid}:last_user_time", 0)
         )
         if last_user and last_user_time > 0:
             return "{:.10}, {}".format(
@@ -86,10 +88,10 @@ class Tool(Client):
             metrics["current_simple"] = message["milliamps_simple"] / 1000.0
         if "user" in message:
             states["user"] = message["user"]
-            last_user = self.factory.toolstatedb.get(f"{self.clientid}:last_user")
+            last_user = self.manager.toolstatedb.get(f"{self.clientid}:last_user")
             if message["user"] != "" and message["user"] != last_user:
-                self.factory.toolstatedb[f"{self.clientid}:last_user"] = message["user"]
-                self.factory.toolstatedb[f"{self.clientid}:last_user_time"] = str(
+                self.manager.toolstatedb[f"{self.clientid}:last_user"] = message["user"]
+                self.manager.toolstatedb[f"{self.clientid}:last_user_time"] = str(
                     time.time()
                 )
                 states["last_user"] = message["user"]
@@ -100,24 +102,9 @@ class Tool(Client):
         await self.set_metrics(metrics, timestamp=message.pop("time", None))
 
 
-class ToolFactory(ClientFactory):
-    def __init__(self, hooks, tokendb, toolstatedb):
-        self.hooks = hooks
-        self.tokendb = tokendb
-        self.toolstatedb = toolstatedb
-        super().__init__()
+class ToolManager(CommonManager):
+    connection_class = ToolConnection
 
-    async def client_from_auth(self, clientid, password, address=None):
-        if clientid.startswith("toolman-"):
-            clientid = clientid[8:]
-        config = await self.hooks.auth_device(clientid, password)
-        if config:
-            client = Tool(
-                clientid, factory=self, config=config, hooks=self.hooks, address=address
-            )
-            self.clients_by_id[clientid] = client
-            self.clients_by_name[client.name] = client
-            return client
-        else:
-            logging.info(f"client {clientid} auth failed (address={address})")
-        return None
+    def __init__(self, *args, toolstatedb=None, **kwargs):
+        self.toolstatedb = toolstatedb
+        super().__init__(*args, **kwargs)
