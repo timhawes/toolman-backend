@@ -6,6 +6,8 @@ import time
 
 from clientbase import CommonConnection, CommonManager
 
+import settings
+
 
 def encode_tune(tune):
     """Pack a tune into the client's internal format.
@@ -63,14 +65,16 @@ class ToolConnection(CommonConnection):
         await self.set_states({"status": "online"})
 
         await self.send_message({"cmd": "state_query"})
-        last_statistics = time.time() - random.randint(0, 45)
+        last_statistics = time.time() - random.randint(
+            0, int(settings.METRICS_QUERY_INTERVAL * 0.75)
+        )
 
         while True:
             await self.loop()
             if time.time() - last_motd > 60:
                 await self.send_motd()
                 last_motd = time.time()
-            if time.time() - last_statistics > 60:
+            if time.time() - last_statistics > settings.METRICS_QUERY_INTERVAL:
                 await self.send_message({"cmd": "state_query"})
                 await self.send_message({"cmd": "metrics_query"})
                 last_statistics = time.time()
