@@ -62,8 +62,6 @@ class ToolConnection(CommonConnection):
 
         last_motd = 0
 
-        await self.set_states({"status": "online"})
-
         await self.send_message({"cmd": "state_query"})
         last_statistics = time.time() - random.randint(
             0, int(settings.METRICS_QUERY_INTERVAL * 0.75)
