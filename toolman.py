@@ -1,6 +1,5 @@
 import asyncio
 import base64
-import logging
 import random
 import time
 
@@ -57,26 +56,25 @@ class ToolConnection(CommonConnection):
     async def send_motd(self):
         await self.send_message({"cmd": "motd", "motd": self.get_motd()})
 
-    async def main_task(self):
-        logging.debug("main_task() started")
+    async def handle_post_auth(self):
+        await super().handle_post_auth()
+        self.create_task(self.tool_task())
+        self.create_task(self.motd_task())
 
-        last_motd = 0
-
+    async def tool_task(self):
         await self.send_message({"cmd": "state_query"})
-        last_statistics = time.time() - random.randint(
-            0, int(settings.METRICS_QUERY_INTERVAL * 0.75)
+        await asyncio.sleep(
+            random.randint(0, int(settings.METRICS_QUERY_INTERVAL * 0.25))
         )
-
         while True:
-            await self.loop()
-            if time.time() - last_motd > 60:
-                await self.send_motd()
-                last_motd = time.time()
-            if time.time() - last_statistics > settings.METRICS_QUERY_INTERVAL:
-                await self.send_message({"cmd": "state_query"})
-                await self.send_message({"cmd": "metrics_query"})
-                last_statistics = time.time()
-            await asyncio.sleep(5)
+            await self.send_message({"cmd": "state_query"})
+            await self.send_message({"cmd": "metrics_query"})
+            await asyncio.sleep(settings.METRICS_QUERY_INTERVAL)
+
+    async def motd_task(self):
+        while True:
+            await self.send_motd()
+            await asyncio.sleep(60)
 
     async def handle_cmd_state_info(self, message):
         states = {}
