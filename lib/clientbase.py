@@ -850,6 +850,10 @@ class CommonManager:
             await client.send_message(message["message"])
             return "OK"
 
+        if message.get("cmd") == "keepalive":
+            await client.send_packet(b"")
+            return "OK"
+
         if message.get("cmd") == "disconnect":
             client.disconnect()
             return "OK"
