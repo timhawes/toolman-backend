@@ -54,6 +54,7 @@ class defaults:
     GENERATE_CONFIG_JSON = False
     LOCATION_PREFIX = "tool:"
     TOKENDB_VERSION = 2
+    REDIS_URL = None
 
 
 def parse_boolean(value):
@@ -141,3 +142,4 @@ GENERATE_CONFIG_JSON = getenv(
 )
 LOCATION_PREFIX = getenv("LOCATION_PREFIX", defaults.LOCATION_PREFIX)
 TOKENDB_VERSION = getenv("TOKENDB_VERSION", defaults.TOKENDB_VERSION, parser=int)
+REDIS_URL = getenv("REDIS_URL", defaults.REDIS_URL)

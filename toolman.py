@@ -41,20 +41,48 @@ def friendly_age(t):
 class ToolConnection(CommonConnection):
     client_strip_prefix = "toolman-"
 
-    def get_motd(self):
-        last_user = self.manager.toolstatedb.get(f"{self.clientid}:last_user")
-        last_user_time = float(
-            self.manager.toolstatedb.get(f"{self.clientid}:last_user_time", 0)
-        )
+    async def get_last_user(self):
+        if self.manager.redis_client:
+            data = await self.manager.redis_client.hgetall(f"doorman:{self.clientid}")
+            last_user = data.get("last_user")
+            last_user_time = data.get("last_user_time")
+            if last_user_time:
+                last_user_time = float(last_user_time)
+        elif self.manager.toolstatedb:
+            last_user = self.manager.toolstatedb.get(f"{self.clientid}:last_user")
+            if last_user:
+                last_user = last_user.decode()
+            last_user_time = float(
+                self.manager.toolstatedb.get(f"{self.clientid}:last_user_time", 0)
+            )
+        else:
+            last_user = None
+            last_user_time = None
+        return last_user, last_user_time
+
+    async def set_last_user(self, last_user, last_user_time):
+        if self.manager.redis_client:
+            await self.manager.redis_client.hset(
+                f"doorman:{self.clientid}",
+                mapping={"last_user": last_user, "last_user_time": last_user_time},
+            )
+        if self.manager.toolstatedb:
+            self.manager.toolstatedb[f"{self.clientid}:last_user"] = last_user
+            self.manager.toolstatedb[f"{self.clientid}:last_user_time"] = str(
+                last_user_time
+            )
+
+    async def get_motd(self):
+        last_user, last_user_time = await self.get_last_user()
         if last_user and last_user_time > 0:
             return "{:.10}, {}".format(
-                last_user.decode(), friendly_age(time.time() - last_user_time)
+                last_user, friendly_age(time.time() - last_user_time)
             )[0:20]
         else:
             return self.config.get("motd", "")
 
     async def send_motd(self):
-        await self.send_message({"cmd": "motd", "motd": self.get_motd()})
+        await self.send_message({"cmd": "motd", "motd": await self.get_motd()})
 
     async def handle_post_auth(self):
         await super().handle_post_auth()
@@ -88,12 +116,9 @@ class ToolConnection(CommonConnection):
             metrics["current_simple"] = message["milliamps_simple"] / 1000.0
         if "user" in message:
             states["user"] = message["user"]
-            last_user = self.manager.toolstatedb.get(f"{self.clientid}:last_user")
+            last_user, last_user_time = await self.get_last_user()
             if message["user"] != "" and message["user"] != last_user:
-                self.manager.toolstatedb[f"{self.clientid}:last_user"] = message["user"]
-                self.manager.toolstatedb[f"{self.clientid}:last_user_time"] = str(
-                    time.time()
-                )
+                await self.set_last_user(message["user"], time.time())
                 states["last_user"] = message["user"]
         # if "last_user" in message:
         #    states["last_user"] = message["last_user"]
@@ -105,6 +130,7 @@ class ToolConnection(CommonConnection):
 class ToolManager(CommonManager):
     connection_class = ToolConnection
 
-    def __init__(self, *args, toolstatedb=None, **kwargs):
+    def __init__(self, *args, toolstatedb=None, redis_client=None, **kwargs):
         self.toolstatedb = toolstatedb
+        self.redis_client = redis_client
         super().__init__(*args, **kwargs)

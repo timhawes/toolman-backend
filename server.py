@@ -7,6 +7,8 @@ import os
 import ssl
 import sys
 
+import redis.asyncio as redis
+
 sys.path.insert(0, os.path.join(os.path.dirname(sys.argv[0]), "lib"))
 
 import fileloader
@@ -128,8 +130,19 @@ if settings.APPRISE_URLS:
         AppriseEvents(settings.APPRISE_URLS, apprise_events=settings.APPRISE_EVENTS)
     )
 
+if settings.REDIS_URL:
+    redis_client = redis.from_url(settings.REDIS_URL, decode_responses=True)
+else:
+    redis_client = None
+
+if settings.TOOLSTATE_FILE:
+    toolstatedb = dbm.open(settings.TOOLSTATE_FILE, flag="c")
+else:
+    toolstatedb = None
+
 tokendb = tokendb.TokenAuthDatabase(hooks)
-toolstatedb = dbm.open(settings.TOOLSTATE_FILE, flag="c")
-manager = toolman.ToolManager(hooks, tokendb, toolstatedb=toolstatedb)
+manager = toolman.ToolManager(
+    hooks, tokendb, toolstatedb=toolstatedb, redis_client=redis_client
+)
 
 asyncio.run(main())

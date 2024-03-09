@@ -9,6 +9,7 @@ paho-mqtt = "==1.*"
 pyyaml = "*"
 requests = "*"
 apprise = "*"
+redis = "*"
 
 [dev-packages]
 
