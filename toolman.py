@@ -73,13 +73,14 @@ class ToolConnection(CommonConnection):
             )
 
     async def get_motd(self):
-        last_user, last_user_time = await self.get_last_user()
-        if last_user and last_user_time > 0:
-            return "{:.10}, {}".format(
-                last_user, friendly_age(time.time() - last_user_time)
-            )[0:20]
-        else:
-            return self.config.get("motd", "")
+        motd = self.config.get("motd", "")
+        if not motd:
+            last_user, last_user_time = await self.get_last_user()
+            if last_user and last_user_time > 0:
+                motd = "{:.10}, {}".format(
+                    last_user, friendly_age(time.time() - last_user_time)
+                )[0:20]
+        return motd
 
     async def send_motd(self):
         await self.send_message({"cmd": "motd", "motd": await self.get_motd()})
