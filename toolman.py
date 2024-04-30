@@ -118,9 +118,10 @@ class ToolConnection(CommonConnection):
         if "user" in message:
             states["user"] = message["user"]
             last_user, last_user_time = await self.get_last_user()
-            if message["user"] != "" and message["user"] != last_user:
+            if message["user"] != "":
                 await self.set_last_user(message["user"], time.time())
-                states["last_user"] = message["user"]
+                if message["user"] != last_user:
+                    states["last_user"] = message["user"]
         # if "last_user" in message:
         #    states["last_user"] = message["last_user"]
 
