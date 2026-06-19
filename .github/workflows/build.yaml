@@ -14,10 +14,6 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
-    strategy:
-      max-parallel: 4
-      matrix:
-        python-version: ["3.14"]
 
     steps:
       - uses: actions/checkout@v6
@@ -27,12 +23,9 @@ jobs:
         with:
           enable-cache: true
           version: "0.11.23"
-          python-version: ${{ matrix.python-version }}
 
       - name: Install the project
         run: uv sync --locked --all-extras --dev
-        with:
-          python-version: ${{ matrix.python-version }}
 
       - name: pre-commit
         run: |
