@@ -16,7 +16,7 @@ class MqttThread(threading.Thread):
     def run(self):
         while True:
             try:
-                m = mqtt.Client(CallbackAPIVersion.API_VERSION2)
+                m = mqtt.Client(CallbackAPIVersion.VERSION2)
                 if self.mqtt_tls:
                     m.tls_set()
                 if self.mqtt_username:
